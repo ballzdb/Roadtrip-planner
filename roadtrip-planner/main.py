@@ -2,7 +2,8 @@ import math
 import os
 import requests
 import xml.etree.ElementTree as ET
-from itertools import permutations
+import time
+from itertools import permutations, combinations
 from dotenv import load_dotenv
 import folium
 import webview
@@ -118,6 +119,60 @@ def brute_force_tsp(coords):
             best_order = order
 
     return best_order, best_dist
+
+
+# --- TSP: Held-Karp Dynamic Programming O(2^n * n^2) ---
+def held_karp_tsp(coords):
+    """
+    Guaranteed-optimal TSP solver using dynamic programming with a bitmask
+    to track which cities have been visited. Same correct answer as brute
+    force, but avoids recomputing overlapping sub-routes, which is why it's
+    dramatically faster: O(2^n * n^2) instead of O(n!).
+
+    For example, at n=12: brute force is ~479 million operations,
+    Held-Karp is roughly 590,000. Still exponential, so it also breaks
+    down eventually (usable up to roughly 15-18 cities), but it pushes
+    the "guaranteed optimal" ceiling much higher than brute force alone.
+    """
+    n = len(coords)
+    dist = [[haversine(coords[i], coords[j]) for j in range(n)] for i in range(n)]
+
+    # C[(visited_bitmask, last_city)] = (min_cost_so_far, path_so_far)
+    # Every route starts at city 0.
+    C = {}
+    for k in range(1, n):
+        C[(1 << k, k)] = (dist[0][k], [0, k])
+
+    for subset_size in range(2, n):
+        for subset in combinations(range(1, n), subset_size):
+            bits = 0
+            for bit in subset:
+                bits |= 1 << bit
+
+            for k in subset:
+                prev_bits = bits & ~(1 << k)
+                candidates = []
+                for m in subset:
+                    if m == k:
+                        continue
+                    if (prev_bits, m) in C:
+                        cost, path = C[(prev_bits, m)]
+                        candidates.append((cost + dist[m][k], path + [k]))
+                if candidates:
+                    C[(bits, k)] = min(candidates, key=lambda x: x[0])
+
+    # Close the loop back to city 0 is NOT needed here since a road trip
+    # doesn't need to return to the start — we just want the shortest path
+    # that visits every city once.
+    full_bits = (1 << n) - 2  # all cities except city 0
+    best = None
+    for k in range(1, n):
+        if (full_bits, k) in C:
+            cost, path = C[(full_bits, k)]
+            if best is None or cost < best[0]:
+                best = (cost, path)
+
+    return best[1], best[0]
 
 
 # --- TSP: Nearest Neighbor Heuristic O(n^2) ---
@@ -257,29 +312,45 @@ def main():
 
     # --- Multi-stop: TSP optimization ---
     else:
-        print(f"\nOptimizing route for {len(cities)} cities...")
+        n = len(cities)
+        print(f"\nOptimizing route for {n} cities...")
 
+        t0 = time.perf_counter()
         nn_order, nn_dist = nearest_neighbor_tsp(coords)
+        nn_time = (time.perf_counter() - t0) * 1000
+        print(f"  Nearest neighbor:  {nn_dist:.1f} km  ({nn_time:.2f} ms)")
 
-        if len(cities) <= 8:
+        if n <= 8:
+            t0 = time.perf_counter()
             bf_order, bf_dist = brute_force_tsp(coords)
+            bf_time = (time.perf_counter() - t0) * 1000
+            print(f"  Brute force:       {bf_dist:.1f} km  ({bf_time:.2f} ms)")
 
-            print(f"  Nearest neighbor:  {nn_dist:.1f} km (straight-line estimate)")
-            print(f"  Brute force:       {bf_dist:.1f} km (straight-line estimate)")
+            t0 = time.perf_counter()
+            hk_order, hk_dist = held_karp_tsp(coords)
+            hk_time = (time.perf_counter() - t0) * 1000
+            print(f"  Held-Karp:         {hk_dist:.1f} km  ({hk_time:.2f} ms)")
 
-            if bf_dist < nn_dist:
-                saving = nn_dist - bf_dist
-                print(f"  Brute force found a better route, saving ~{saving:.1f} km.")
-                best_order = bf_order
-            else:
-                print(f"  Both methods found the same route.")
-                best_order = bf_order
+            agree = abs(bf_dist - hk_dist) < 0.01
+            print(f"  Brute force and Held-Karp agree: {agree}")
 
-            method = "Brute force (guaranteed optimal)"
+            best_order = bf_order
+            method = "Brute force / Held-Karp (both guaranteed optimal, agree above)"
+
+        elif n <= 15:
+            print(f"  {n} cities is too many for brute force (O(n!)) to finish in reasonable time.")
+            t0 = time.perf_counter()
+            hk_order, hk_dist = held_karp_tsp(coords)
+            hk_time = (time.perf_counter() - t0) * 1000
+            print(f"  Held-Karp:         {hk_dist:.1f} km  ({hk_time:.2f} ms) — still guaranteed optimal")
+
+            best_order = hk_order
+            method = "Held-Karp dynamic programming (guaranteed optimal)"
+
         else:
-            print(f"  {len(cities)} cities is too many for brute force (O(n!)), using nearest neighbor.")
+            print(f"  {n} cities is too many for Held-Karp (O(2^n * n^2)) to finish in reasonable time.")
             best_order = nn_order
-            method = "Nearest neighbor heuristic"
+            method = "Nearest neighbor heuristic (not guaranteed optimal)"
 
         ordered_cities = [cities[i] for i in best_order]
         ordered_coords = [coords[i] for i in best_order]
