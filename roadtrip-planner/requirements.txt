@@ -3,3 +3,5 @@ python-dotenv
 folium
 pywebview
 
+TODO: booking if time between 2 cities is more than 10 hours to drive.
+also fix gas prices. 

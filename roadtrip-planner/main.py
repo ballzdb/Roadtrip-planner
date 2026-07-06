@@ -257,10 +257,10 @@ def show_map_window(filename):
 def main():
     print("🚗 Road Trip Planner")
 
-    print("\nEnter cities (type 'done' when finished, minimum 2):")
+    print("\nEnter locations (type 'done' when finished, minimum 2):")
     cities = []
     while True:
-        city = input(f"  City {len(cities) + 1}: ").strip()
+        city = input(f"  Location {len(cities) + 1}: ").strip()
         if city.lower() == "done":
             if len(cities) < 2:
                 print("  Need at least 2 cities.")
