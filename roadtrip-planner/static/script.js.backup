@@ -290,18 +290,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 <div><strong>Total Distance:</strong> ${optimizeData.total_distance_km.toFixed(2)} km</div>
                 <div><strong>Estimated Time:</strong> ${optimizeData.total_duration_h.toFixed(2)} hours</div>
                 <div><strong>Fuel Cost:</strong> $${optimizeData.estimated_fuel_cost.toFixed(2)}</div>
-                <div><strong>Fuel Prices:</strong></div>
-                <div class="fuel-prices">
-                    ${Object.entries(optimizeData.fuel_price_all)
-                        .map(([type, price]) => `
-                            <div class="fuel-price-item ${type === optimizeData.fuel_type ? 'active' : ''}">
-                                <span class="fuel-type">${type.toUpperCase()}:</span>
-                                <span class="fuel-price">$${price.toFixed(2)}/gal</span>
-                            </div>
-                        `)
-                        .join('')}
-                </div>
                 <div><strong>Car Type:</strong> ${optimizeData.car_type} (${optimizeData.mpg} MPG)</div>
+                <div><strong>Fuel Type:</strong> ${optimizeData.fuel_type} ($${optimizeData.fuel_price_per_gallon.toFixed(2)}/gal)</div>
                 <div><strong>Optimization Method:</strong> ${optimizeData.method}</div>
                 <div><strong>Road vs Straight Distance:</strong> ${optimizeData.road_overhead_percent.toFixed(1)}% longer</div>
             `;

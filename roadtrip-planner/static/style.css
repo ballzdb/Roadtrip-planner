@@ -808,6 +808,49 @@ textarea.form-control {
     }
 }
 
+/* Fuel Prices Display */
+.fuel-prices {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 0.75rem;
+    margin: 0.75rem 0;
+    padding: 0.75rem;
+    background: rgba(0,0,0,0.1);
+    border-radius: var(--border-radius-sm);
+    border: 1px solid rgba(255,255,255,0.08);
+}
+
+.fuel-price-item {
+    text-align: center;
+    padding: 0.5rem;
+    border-radius: var(--border-radius-sm);
+    transition: all var(--transition-speed) var(--transition-cubic);
+}
+
+.fuel-price-item.active {
+    background: rgba(255,154,86,0.2);
+    border: 1px solid rgba(255,154,86,0.3);
+    transform: translateY(-2px);
+}
+
+.fuel-price-item:hover {
+    background: rgba(0,0,0,0.15);
+}
+
+.fuel-type {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    display: block;
+    margin-bottom: 0.25rem;
+}
+
+.fuel-price {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    display: block;
+}
+
 /* Print Styles */
 @media print {
     body {
