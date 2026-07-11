@@ -42,7 +42,7 @@ def haversine(coord1, coord2):
 
 # --- Geocoding ---
 def get_coordinates(city_name):
-    headers = {"Authorization": ORS_API_KEY}
+    headers = {"Authorization": ORS_API_KEY}1
     params = {"text": city_name}
     try:
         r = requests.get(GEOCODE_URL, headers=headers, params=params, timeout=5)

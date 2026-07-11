@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#0f0c29">
+    <meta name="description" content="Plan your multi-city road trip with optimized routes, fuel cost estimates, and interactive maps.">
+    <title>Road Trip Planner</title>
+    <!-- Google Font -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
+</head>
+<body>
+    <!-- Floating decorative elements -->
+    <div class="floating-elements" aria-hidden="true">
+        <div class="floating-item" style="--size: 80px; --move-y: -30px; --move-x: 20px; --rotate: 15deg; --duration: 16s; --delay: 0s;"></div>
+        <div class="floating-item" style="--size: 60px; --move-y: -20px; --move-x: -15px; --rotate: -10deg; --duration: 14s; --delay: 2s;"></div>
+        <div class="floating-item" style="--size: 100px; --move-y: -25px; --move-x: 25px; --rotate: 8deg; --duration: 18s; --delay: 4s;"></div>
+        <div class="floating-item" style="--size: 50px; --move-y: -15px; --move-x: -10px; --rotate: -5deg; --duration: 12s; --delay: 1s;"></div>
+        <div class="floating-item" style="--size: 70px; --move-y: -22px; --move-x: 18px; --rotate: 12deg; --duration: 15s; --delay: 3s;"></div>
+    </div>
+
+    <div class="container-fluid py-4">
+        <header class="text-center mb-4 d-flex align-items-center justify-content-between">
+            <div>
+                <h1><i class="bi bi-truck-front me-2"></i>Road Trip Planner</h1>
+                <p class="lead">Plan your multi-city road trip with optimized routes, fuel cost estimates, and interactive maps.</p>
+            </div>
+            <div class="dropdown">
+                <button class="btn btn-outline-light dropdown-toggle" type="button" id="theme-toggle" data-bs-toggle="dropdown" aria-expanded="false">
+                    <i class="bi bi-moon-stars me-1"></i>Theme
+                </button>
+                <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="theme-toggle">
+                    <li><button class="dropdown-item" id="theme-light"><i class="bi bi-sun me-2"></i>Light</button></li>
+                    <li><button class="dropdown-item" id="theme-dark"><i class="bi bi-moon me-2"></i>Dark</button></li>
+                    <li><button class="dropdown-item" id="theme-auto"><i class="bi bi-circle-half me-2"></i>System</button></li>
+                </ul>
+            </div>
+        </header>
+
+        <main>
+            <!-- Trip Form -->
+            <section id="trip-form-section" class="mb-4">
+                <div class="card shadow-sm">
+                    <div class="card-body">
+                        <h2 class="h4 mb-4"><i class="bi bi-gear-wide me-2"></i>Plan Your Trip</h2>
+                        <form id="trip-form">
+                            <div class="mb-3">
+                                <label for="cities" class="form-label fw-bold">Cities (one per line, at least 2):</label>
+                                <textarea id="cities" class="form-control" rows="4" placeholder="New York
+Philadelphia
+Washington DC" required></textarea>
+                            </div>
+                            <div class="mb-3">
+                                <label for="car-type" class="form-label fw-bold">Vehicle Type:</label>
+                                <select id="car-type" class="form-select">
+                                    <option value="economy">Economy (35 MPG)</option>
+                                    <option value="sedan" selected>Sedan (30 MPG)</option>
+                                    <option value="suv">SUV (22 MPG)</option>
+                                    <option value="truck">Truck (15 MPG)</option>
+                                    <option value="sports">Sports (18 MPG)</option>
+                                </select>
+                            </div>
+                            <div class="mb-3">
+                                <label for="fuel-type" class="form-label fw-bold">Fuel Type:</label>
+                                <select id="fuel-type" class="form-select">
+                                    <option value="regular" selected>Regular</option>
+                                    <option value="mid">Mid-grade</option>
+                                    <option value="premium">Premium</option>
+                                    <option value="diesel">Diesel</option>
+                                </select>
+                            </div>
+                            <div class="d-grid">
+                                <button type="submit" id="submit-btn" class="btn btn-primary btn-lg">
+                                    <i class="bi bi-play-circle me-2"></i>Plan Trip
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Trip Results -->
+            <section id="trip-results-section" class="mb-4 d-none">
+                <div class="card shadow-sm">
+                    <div class="card-body">
+                        <h2 class="h4 mb-4"><i class="bi bi-clipboard-check me-2"></i>Trip Results</h2>
+
+                        <!-- Trip Info -->
+                        <div id="trip-info" class="mb-4 d-none">
+                            <h3 class="h5 mb-3"><i class="bi bi-info-circle me-2"></i>Trip Summary</h3>
+                            <div id="trip-summary" class="row g-3"></div>
+                        </div>
+
+                        <!-- Warnings -->
+                        <div id="trip-warnings" class="mb-4 d-none"></div>
+
+                        <!-- Actions -->
+                        <div id="trip-actions" class="mb-4 d-none">
+                            <div class="d-grid gap-2 d-md-flex justify-content-md-start">
+                                <button id="save-trip-btn" class="btn btn-outline-success me-2">
+                                    <i class="bi bi-star me-1"></i>Save Trip
+                                </button>
+                                <button id="share-link-btn" class="btn btn-outline-info me-2">
+                                    <i class="bi bi-link me-1"></i>Share Link
+                                </button>
+                                <button id="export-gpx-btn" class="btn btn-outline-warning me-2">
+                                    <i class="bi bi-download me-1"></i>Export GPX
+                                </button>
+                                <button id="export-json-btn" class="btn btn-outline-secondary me-2">
+                                    <i class="bi bi-file-earmark-text me-1"></i>Export JSON
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Shareable Link -->
+                        <div id="share-section" class="mb-4 d-none">
+                            <div class="input-group">
+                                <input type="text" id="share-link" class="form-control" readonly>
+                                <button id="copy-link-btn" class="btn btn-outline-secondary" type="button">
+                                    <i class="bi bi-copy"></i> Copy
+                                </button>
+                            </div>
+                            <small class="text-muted mt-1 d-block">Share this link to let others view your trip plan.</small>
+                        </div>
+
+                        <!-- Saved Trips Loader -->
+                        <div id="saved-trips-section" class="mb-4">
+                            <h3 class="h5 mb-3"><i class="bi bi-hdd-stack me-2"></i>Saved Trips</h3>
+                            <div class="input-group">
+                                <select id="saved-trips-select" class="form-select me-2">
+                                    <option value="">Select a saved trip...</option>
+                                </select>
+                                <button id="load-trip-btn" class="btn btn-outline-primary">
+                                    <i class="bi bi-arrow-clockwise me-2"></i>Load
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Map -->
+                        <div id="map-section" class="mb-4">
+                            <h3 class="h5 mb-3"><i class="bi bi-map me-2"></i>Route Map</h3>
+                            <div id="map-container" class="ratio ratio-16x9">
+                                <iframe id="trip-map" srcdoc="<p>Loading map...</p>" class="position-absolute top-0 start-0 w-100 h-100 border-0" allowfullscreen></iframe>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="script.js"></script>
+    <!-- Bootstrap 5 JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

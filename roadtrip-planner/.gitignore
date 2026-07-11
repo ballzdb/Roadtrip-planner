@@ -3,3 +3,8 @@ __pycache__/
 *.pyc
 .env~
 trip_map.html
+
+# Generated map files
+maps/
+map_requests.log
+trip_map.html
