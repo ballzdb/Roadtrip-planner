@@ -363,5 +363,92 @@ def serve_map(filename):
         return 'Map not found', 404
     return send_from_directory(MAPS_DIR, filename)
 
+# --- Points of Interest (Overpass API) ---
+def get_pois_along_route(coords, radius_miles=5):
+    """
+    coords: list of [lon, lat] (from ORS)
+    Returns dict with keys: 'gas_station', 'restaurant', 'lodging'
+    Each value is list of dicts with 'name', 'address', 'lat', 'lon'
+    """
+    if not coords:
+        return {'gas_station': [], 'restaurant': [], 'lodging': []}
+    # Overpass API endpoint
+    overpass_url = "https://overpass-api.de/api/interpreter"
+    # Sample points to avoid too many requests (every nth point)
+    step = max(1, len(coords) // 10)  # at most 10 points
+    sampled = coords[::step]
+    if len(sampled) > 10:
+        sampled = sampled[:10]
+    pois = {'gas_station': [], 'restaurant': [], 'lodging': []}
+    for lon, lat in sampled:
+        # Convert radius miles to meters
+        radius_meters = int(radius_miles * 1609.34)
+        # Build Overpass QL query
+        query = f"""
+        [out:json][timeout:25];
+        (
+          node["amenity"="fuel"](around:{radius_meters},{lat},{lon});
+          node["amenity"="restaurant"](around:{radius_meters},{lat},{lon});
+          node["amenity"="lodging"](around:{radius_meters},{lat},{lon});
+        );
+        out center;
+        """
+        try:
+            resp = requests.post(overpass_url, data=query, timeout=30)
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+            for element in data.get('elements', []):
+                tags = element.get('tags', {})
+                name = tags.get('name') or 'Unnamed'
+                # Address approximation
+                addr_parts = []
+                if tags.get('addr:street'):
+                    addr_parts.append(tags['addr:street'])
+                if tags.get('addr:housenumber'):
+                    addr_parts.insert(0, tags['addr:housenumber'])
+                if tags.get('addr:city'):
+                    addr_parts.append(tags['addr:city'])
+                address = ', '.join(addr_parts) if addr_parts else ''
+                poi = {
+                    'name': name,
+                    'address': address,
+                    'lat': element.get('lat'),
+                    'lon': element.get('lon')
+                }
+                amenity = tags.get('amenity')
+                if amenity == 'fuel':
+                    pois['gas_station'].append(poi)
+                elif amenity == 'restaurant':
+                    pois['restaurant'].append(poi)
+                elif amenity == 'lodging':
+                    pois['lodging'].append(poi)
+        except Exception as e:
+            print(f"POI request error: {e}")
+            continue
+    # Deduplicate by name+location (simple)
+    for key in pois:
+        seen = set()
+        unique = []
+        for p in pois[key]:
+            identifier = (p.get('name'), p.get('lat'), p.get('lon'))
+            if identifier not in seen:
+                seen.add(identifier)
+                unique.append(p)
+        pois[key] = unique
+    return pois
+
+
+# --- Flask routes for POI ---
+@app.route('/api/pois', methods=['POST'])
+def pois():
+    data = request.get_json()
+    coords = data.get('coords')  # list of [lon, lat]
+    radius_miles = data.get('radius_miles', 5)
+    if not coords:
+        return jsonify({'error': 'Coordinates required'}), 400
+    pois = get_pois_along_route(coords, radius_miles)
+    return jsonify({'poi': pois})
+
 if __name__ == '__main__':
     app.run(debug=True, port=5000)

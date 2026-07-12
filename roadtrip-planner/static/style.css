@@ -510,6 +510,26 @@ textarea.form-control {
 .btn-lg { padding: 1rem 1.75rem; font-size: 1rem; }
 .btn-sm { padding: 0.6rem 1rem; font-size: 0.875rem; }
 
+/* Touch-friendly enhancements */
+@media (max-width: 480px) {
+    .btn {
+        min-height: 48px;
+        padding: 0.75rem 1.2rem;
+        font-size: 1rem;
+    }
+    .form-control,
+    .form-select {
+        min-height: 48px;
+        padding: 0.8rem 1rem;
+        font-size: 0.9rem;
+    }
+    .btn:active,
+    .form-control:active,
+    .form-select:active {
+        transform: scale(0.97);
+    }
+}
+
 /* Result Section Styles */
 #trip-info h3,
 #saved-trips-section h3,
@@ -596,6 +616,7 @@ textarea.form-control {
     align-items: center;
     gap: 0.75rem;
     backdrop-filter: blur(10px);
+    transition: all var(--transition-speed) var(--transition-cubic);
 }
 
 .alert-warning {
@@ -616,6 +637,116 @@ textarea.form-control {
 
 .alert-danger i {
     color: #dc3545;
+}
+
+.alert:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-sm);
+}
+
+/* POI List Items */
+.list-group-item {
+    background: var(--card-bg-form);
+    border: 1px solid var(--card-border);
+    border-radius: var(--border-radius-sm);
+    margin-bottom: 0.5rem;
+    padding: 0.9rem 1.2rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition: all var(--transition-speed) var(--transition-cubic);
+    backdrop-filter: blur(10px);
+}
+
+.list-group-item:hover {
+    background: var(--card-bg-form-focus);
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-sm);
+    border-color: rgba(255,255,255,0.18);
+}
+
+.list-group-item strong {
+    color: var(--text-primary);
+    font-size: 1rem;
+}
+
+.list-group-item small {
+    color: var(--text-muted);
+}
+
+/* Fuel price items enhancement */
+.fuel-price-item {
+    text-align: center;
+    padding: 0.75rem;
+    border-radius: var(--border-radius-sm);
+    transition: all var(--transition-speed) var(--transition-cubic);
+    border: 1px solid rgba(255,255,255,0.08);
+    backdrop-filter: blur(10px);
+}
+
+.fuel-price-item.active {
+    background: rgba(255,154,86,0.2);
+    border: 1px solid rgba(255,154,86,0.3);
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-sm);
+}
+
+.fuel-price-item:hover:not(.active) {
+    background: rgba(0,0,0,0.15);
+    transform: translateY(-2px);
+}
+
+/* Submit button pulse animation */
+.btn-primary {
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0% {
+        box-shadow: 0 0 0 0 rgba(255, 154, 86, 0.4);
+    }
+    70% {
+        box-shadow: 0 0 0 12px rgba(255, 154, 86, 0);
+    }
+    100% {
+        box-shadow: 0 0 0 0 rgba(255, 154, 86, 0);
+    }
+}
+
+/* Card hover lift enhancement */
+.card:hover {
+    transform: translateY(-6px) scale(1.02);
+    box-shadow: var(--shadow-lg);
+    border-color: rgba(255, 255, 255, 0.22);
+}
+
+/* Form input focus glow */
+.form-control:focus,
+.form-select:focus {
+    box-shadow:
+        0 0 0 3px rgba(255, 154, 86, 0.25),
+        var(--shadow-inner);
+}
+
+/* Header title underline animation */
+header h1::after {
+    transition: width 0.4s ease;
+}
+
+header:hover h1::after {
+    width: 80px;
+}
+
+/* Responsive tweaks for POI list */
+@media (max-width: 480px) {
+    .list-group-item {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.5rem;
+    }
+    .list-group-item small {
+        align-self: flex-start;
+    }
 }
 
 /* Share Section */

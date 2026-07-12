@@ -19,6 +19,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const themeAutoBtn = document.getElementById('theme-auto');
     const resultsSection = document.getElementById('trip-results-section');
     const mapContainer = document.getElementById('map-container');
+    const poiSection = document.getElementById('pois-section');
 
     // Initialize theme from localStorage or system preference
     const savedTheme = localStorage.getItem('theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
@@ -194,6 +195,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const citiesText = document.getElementById('cities').value.trim();
         const carType = document.getElementById('car-type').value;
         const fuelType = document.getElementById('fuel-type').value;
+        const routeType = document.getElementById('route-type').value;
+        const avoidTolls = document.getElementById('avoid-tolls').checked;
+        const avoidHighways = document.getElementById('avoid-highways').checked;
+        const avoidFerries = document.getElementById('avoid-ferries').checked;
+        const poiEnabled = document.getElementById('poi-toggle').checked;
 
         if (!citiesText) {
             alert('Please enter at least two cities.');
@@ -255,7 +261,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     car_type: carType,
                     mpg,
                     fuel_price: fuelPriceData.price_per_gallon,
-                    fuel_type: fuelType
+                    fuel_type: fuelType,
+                    route_type: routeType,
+                    avoid: {
+                        tolls: avoidTolls,
+                        highways: avoidHighways,
+                        ferries: avoidFerries
+                    }
                 })
             });
             const optimizeData = await optimizeRes.json();
@@ -268,6 +280,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 cities: cities,
                 car_type: carType,
                 fuel_type: fuelType,
+                route_type: routeType,
+                avoid: {
+                    tolls: avoidTolls,
+                    highways: avoidHighways,
+                    ferries: avoidFerries
+                },
+                poi_enabled: poiEnabled,
                 ordered_cities: optimizeData.ordered_cities,
                 ordered_coords: optimizeData.ordered_coords,
                 total_distance_km: optimizeData.total_distance_km,
@@ -281,6 +300,30 @@ document.addEventListener('DOMContentLoaded', () => {
                 legs: optimizeData.legs || []
             };
 
+            // Fetch POIs if enabled
+            if (poiEnabled) {
+                // POIs
+                fetch('/api/pois', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        coords: optimizeData.ordered_coords,
+                        radius_miles: 5
+                    })
+                })
+                .then(res => res.json())
+                .then(poisData => {
+                    displayPOIs(poisData.poi);
+                    poiSection.classList.remove('d-none');
+                })
+                .catch(err => {
+                    console.error('POI fetch error:', err);
+                });
+            } else {
+                poiSection.classList.add('d-none');
+            }
+
+            
             // Show results section
             resultsSection.classList.remove('d-none');
 
@@ -428,7 +471,32 @@ document.addEventListener('DOMContentLoaded', () => {
         exportAsJson(tripData);
     });
 
-    // Initial load: check for URL params and load saved trips list
+    // POI and Elevation Functions
+function displayPOIs(poisData) {
+    const poisList = document.getElementById('pois-list');
+    poisList.innerHTML = '';
+    const poiTypes = ['gas_station', 'restaurant', 'lodging'];
+    poiTypes.forEach(type => {
+        const pois = poisData[type] || [];
+        if (pois.length === 0) return;
+        const typeDiv = document.createElement('div');
+        typeDiv.className = 'col-12 mb-3';
+        typeDiv.innerHTML = `<h6>${type.replace('_', ' ').toUpperCase()}</h6>`;
+        const listGroup = document.createElement('div');
+        listGroup.className = 'list-group';
+        pois.forEach(poi => {
+            const item = document.createElement('div');
+            item.className = 'list-group-item list-group-item-action';
+            item.innerHTML = `<strong>${poi.name || 'Unnamed'}</strong><br><small class="text-muted">${poi.address || ''}</small>`;
+            listGroup.appendChild(item);
+        });
+        typeDiv.appendChild(listGroup);
+        poisList.appendChild(typeDiv);
+    });
+}
+
+
+// Initial load: check for URL params and load saved trips list
     loadSavedTrips();
     initFromUrl();
 

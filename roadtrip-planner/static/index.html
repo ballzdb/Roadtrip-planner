@@ -73,6 +73,40 @@ Washington DC" required></textarea>
                                     <option value="diesel">Diesel</option>
                                 </select>
                             </div>
+                                                        <div class="mb-3">
+                                <label for="route-options" class="form-label fw-bold">Route Options:</label>
+                                <div class="row g-2">
+                                    <div class="col-md-6">
+                                        <label class="form-label">Route Type:</label>
+                                        <select id="route-type" class="form-select">
+                                            <option value="fastest" selected>Fastest</option>
+                                            <option value="shortest">Shortest</option>
+                                            <option value="eco">Eco (avoid highways)</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label class="form-label">Avoid:</label>
+                                        <div class="form-check form-check-inline">
+                                            <input class="form-check-input" type="checkbox" id="avoid-tolls" value="tolls">
+                                            <label class="form-check-label" for="avoid-tolls">Tolls</label>
+                                        </div>
+                                        <div class="form-check form-check-inline">
+                                            <input class="form-check-input" type="checkbox" id="avoid-highways" value="highways">
+                                            <label class="form-check-label" for="avoid-highways">Highways</label>
+                                        </div>
+                                        <div class="form-check form-check-inline">
+                                            <input class="form-check-input" type="checkbox" id="avoid-ferries" value="ferries">
+                                            <label class="form-check-label" for="avoid-ferries">Ferries</label>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="mb-3 form-check">
+                                <input type="checkbox" class="form-check-input" id="poi-toggle">
+                                <label class="form-check-label" for="poi-toggle">
+                                    Show Points of Interest (gas, food, lodging)
+                                </label>
+                            </div>
                             <div class="d-grid">
                                 <button type="submit" id="submit-btn" class="btn btn-primary btn-lg">
                                     <i class="bi bi-play-circle me-2"></i>Plan Trip
@@ -93,6 +127,13 @@ Washington DC" required></textarea>
                         <div id="trip-info" class="mb-4 d-none">
                             <h3 class="h5 mb-3"><i class="bi bi-info-circle me-2"></i>Trip Summary</h3>
                             <div id="trip-summary" class="row g-3"></div>
+                        </div>
+
+                        
+                        <!-- Points of Interest -->
+                        <div id="pois-section" class="mb-4 d-none">
+                            <h3 class="h5 mb-3"><i class="bi bi-geo-alt-fill me-2"></i>Points of Interest</h3>
+                            <div class="row g-3" id="pois-list"></div>
                         </div>
 
                         <!-- Warnings -->
@@ -153,8 +194,10 @@ Washington DC" required></textarea>
         </main>
     </div>
 
-    <script src="script.js"></script>
     <!-- Bootstrap 5 JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="script.js"></script>
 </body>
 </html>
