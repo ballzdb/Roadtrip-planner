@@ -77,43 +77,71 @@ def get_route(start_coords, end_coords):
         return None, None, None
 
 # --- Fuel price ---
-def get_fuel_price():
+def get_fuel_prices():
+    """Fetch all available fuel prices from the API."""
     try:
         r = requests.get(FUEL_URL, timeout=3)
         r.raise_for_status()
         root = ET.fromstring(r.text)
         fuels = {}
-        # Mapping of our keys to possible XML tag names
-        tag_map = {
-            'regular': ['regular'],
-            'mid': ['mid', 'midgrade'],
-            'premium': ['premium'],
-            'diesel': ['diesel']
+
+        # Extract all available fuel types
+        fuel_types = ['regular', 'midgrade', 'premium', 'diesel', 'cng', 'e85', 'electric', 'lpg']
+        for fuel in fuel_types:
+            elem = root.find(fuel)
+            if elem is not None and elem.text:
+                try:
+                    fuels[fuel] = float(elem.text)
+                except ValueError:
+                    pass
+
+        return fuels if fuels else None
+    except Exception as e:
+        print(f"  Could not fetch live fuel prices: {e}")
+        return None
+
+@app.route('/api/fuel_price', methods=['GET'])
+def fuel_price():
+    """Get all fuel prices."""
+    fuels = get_fuel_prices()
+    if fuels is None:
+        # Fallback prices if API fails
+        fuels = {
+            'regular': 3.50,
+            'midgrade': 3.70,
+            'premium': 3.90,
+            'diesel': 4.20,
+            'cng': 2.50,
+            'e85': 2.80,
+            'electric': 0.12,
+            'lpg': 3.00
         }
-        for key, possible_tags in tag_map.items():
-            for tag in possible_tags:
-                elem = root.find(tag)
-                if elem is not None and elem.text:
-                    try:
-                        fuels[key] = float(elem.text)
-                        break
-                    except ValueError:
-                        pass
-        # Ensure we have at least some values; fill missing with approximations
-        if fuels:
-            if 'regular' not in fuels:
-                fuels['regular'] = fuels.get('mid', 3.50) - 0.20
-            if 'mid' not in fuels:
-                fuels['mid'] = fuels.get('regular', 3.50) + 0.20
-            if 'premium' not in fuels:
-                fuels['premium'] = fuels.get('mid', 3.50) + 0.20
-            if 'diesel' not in fuels:
-                fuels['diesel'] = fuels.get('regular', 3.50)  # approximate
-            return fuels
-    except Exception:
-        pass
-    # Fallback with varied realistic prices
-    return {'regular': 3.159, 'mid': 3.459, 'premium': 3.759, 'diesel': 3.459}
+    return jsonify({'price_per_gallon': fuels})
+
+def get_fuel_price(fuel_type='regular'):
+    """Get price for a specific fuel type, with fallback."""
+    fuels = get_fuel_prices()
+    if fuels and fuel_type in fuels:
+        return fuels[fuel_type]
+
+    # Fallback prices if API fails
+    fallback_prices = {
+        'regular': 3.50,
+        'midgrade': 3.70,
+        'premium': 3.90,
+        'diesel': 4.20,
+        'cng': 2.50,
+        'e85': 2.80,
+        'electric': 0.12,
+        'lpg': 3.00
+    }
+
+    if fuel_type in fallback_prices:
+        print(f"  Using fallback price for {fuel_type}: ${fallback_prices[fuel_type]:.2f}/gal")
+        return fallback_prices[fuel_type]
+    else:
+        print(f"  Unknown fuel type '{fuel_type}', using regular fallback: $3.50/gal")
+        return 3.50
 
 # --- Fuel cost ---
 def estimate_fuel_cost(distance_km, mpg, price_per_gallon):
@@ -256,11 +284,6 @@ def route():
         'duration_s': duration_s,
         'geometry': geometry
     })
-
-@app.route('/api/fuel_price', methods=['GET'])
-def fuel_price():
-    price = get_fuel_price()
-    return jsonify({'price_per_gallon': price})
 
 @app.route('/api/car-types/<car_type>', methods=['GET'])
 def car_type_info(car_type):
@@ -449,6 +472,7 @@ def pois():
         return jsonify({'error': 'Coordinates required'}), 400
     pois = get_pois_along_route(coords, radius_miles)
     return jsonify({'poi': pois})
+
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)

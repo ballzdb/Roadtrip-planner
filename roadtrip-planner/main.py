@@ -42,7 +42,7 @@ def haversine(coord1, coord2):
 
 # --- Geocoding ---
 def get_coordinates(city_name):
-    headers = {"Authorization": ORS_API_KEY}1
+    headers = {"Authorization": ORS_API_KEY}
     params = {"text": city_name}
     try:
         r = requests.get(GEOCODE_URL, headers=headers, params=params, timeout=5)
@@ -78,18 +78,53 @@ def get_route(start_coords, end_coords):
 
 
 # --- Fuel price ---
-def get_fuel_price():
+def get_fuel_prices():
+    """Fetch all available fuel prices from the API."""
     try:
         r = requests.get(FUEL_URL, timeout=3)
         r.raise_for_status()
         root = ET.fromstring(r.text)
-        regular = root.find("regular")
-        if regular is not None and regular.text:
-            return float(regular.text)
-    except Exception:
-        pass
-    print("  Could not fetch live fuel price, using fallback $3.50.")
-    return 3.50
+        fuels = {}
+
+        # Extract all available fuel types
+        fuel_types = ['regular', 'midgrade', 'premium', 'diesel', 'cng', 'e85', 'electric', 'lpg']
+        for fuel in fuel_types:
+            elem = root.find(fuel)
+            if elem is not None and elem.text:
+                try:
+                    fuels[fuel] = float(elem.text)
+                except ValueError:
+                    pass
+
+        return fuels if fuels else None
+    except Exception as e:
+        print(f"  Could not fetch live fuel prices: {e}")
+        return None
+
+def get_fuel_price(fuel_type='regular'):
+    """Get price for a specific fuel type, with fallback."""
+    fuels = get_fuel_prices()
+    if fuels and fuel_type in fuels:
+        return fuels[fuel_type]
+
+    # Fallback prices if API fails
+    fallback_prices = {
+        'regular': 3.50,
+        'midgrade': 3.70,
+        'premium': 3.90,
+        'diesel': 4.20,
+        'cng': 2.50,
+        'e85': 2.80,
+        'electric': 0.12,
+        'lpg': 3.00
+    }
+
+    if fuel_type in fallback_prices:
+        print(f"  Using fallback price for {fuel_type}: ${fallback_prices[fuel_type]:.2f}/gal")
+        return fallback_prices[fuel_type]
+    else:
+        print(f"  Unknown fuel type '{fuel_type}', using regular fallback: $3.50/gal")
+        return 3.50
 
 
 # --- Fuel cost ---
