@@ -13,3 +13,12 @@ If you only typed two cities, the program grabs the real driving route between t
 If you type in more than two cities, the program has to figure out the best order to visit them, which is a classic computer science problem called the Travelling Salesman Problem. Basically, if you have a bunch of cities, there are a huge number of possible orders you could visit them in, and you want the one that adds up to the shortest total distance. My program solves this in two different ways. If there are 8 or fewer cities, it tries literally every single possible order and picks the shortest one. This is called brute force, and it always finds the actual best answer, but it gets slow extremely fast, since the number of possible orders grows factorially. With 8 cities that's already over 40,000 combinations, and by 12 cities it's in the hundreds of millions. So for anything bigger than 8 cities, the program switches to a different method called nearest neighbor, where it just keeps going to whichever city is closest that it hasn't visited yet. This isn't always the perfect answer, but it's way faster and can handle any number of cities without freezing your computer.
 
 Once the program knows the best order to visit the cities, it calls the routing API again for each real segment of the trip, adds up the total distance and time, and grabs the current average gas price in the US from a government website called fueleconomy.gov. Then it does simple math with your car's MPG to estimate how much the whole trip will cost you in gas.
+
+## Setup & API Key Configuration
+
+1. Create or open the `.env` file in the project folder (`roadtrip-planner/.env`).
+2. Add your OpenRouteService API key:
+   ```env
+   ORS_API_KEY=your_actual_api_key_here
+   ```
+3. Get a free API key at [openrouteservice.org](https://openrouteservice.org/dev/#/signup).

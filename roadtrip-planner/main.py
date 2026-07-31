@@ -5,8 +5,10 @@ import xml.etree.ElementTree as ET
 import time
 from itertools import permutations, combinations
 from dotenv import load_dotenv
-import folium
-import webview
+try:
+    import webview
+except ImportError:
+    webview = None
 
 load_dotenv()
 
@@ -40,21 +42,49 @@ def haversine(coord1, coord2):
     return EARTH_RADIUS_KM * c
 
 
+def get_ors_api_key():
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    local_env = os.path.join(base_dir, ".env")
+    parent_env = os.path.join(base_dir, "..", ".env")
+
+    if os.path.exists(local_env):
+        load_dotenv(local_env, override=True)
+    if os.path.exists(parent_env):
+        load_dotenv(parent_env, override=True)
+
+    key = os.getenv("ORS_API_KEY")
+    if not key or not key.strip() or key.strip() == "your_openrouteservice_api_key_here":
+        return None
+    return key.strip()
+
 # --- Geocoding ---
 def get_coordinates(city_name):
-    headers = {"Authorization": ORS_API_KEY}
+    api_key = get_ors_api_key()
+    if not api_key:
+        print("  ❌ Error: ORS_API_KEY is missing. Please set your API key in the .env file.")
+        return None
+    headers = {"Authorization": api_key}
     params = {"text": city_name}
     try:
-        r = requests.get(GEOCODE_URL, headers=headers, params=params, timeout=5)
+        r = requests.get(GEOCODE_URL, headers=headers, params=params, timeout=10)
+        if r.status_code in (401, 403):
+            print(f"  ❌ Error: Invalid OpenRouteService API key (HTTP {r.status_code}). Please check your .env file.")
+            return None
         r.raise_for_status()
         data = r.json()
-        return data["features"][0]["geometry"]["coordinates"]
-    except (requests.RequestException, KeyError, IndexError) as e:
-        print(f"  Geocoding failed for '{city_name}': {e}")
+        features = data.get("features", [])
+        if not features:
+            print(f"  ❌ Geocoding returned no results for '{city_name}'.")
+            return None
+        return features[0]["geometry"]["coordinates"]
+    except requests.RequestException as e:
+        print(f"  ❌ Geocoding network error for '{city_name}': {e}")
+        return None
+    except (KeyError, IndexError) as e:
+        print(f"  ❌ Geocoding parse error for '{city_name}': {e}")
         return None
 
 
-# --- Routing ---
 # --- Routing ---
 def get_route(start_coords, end_coords):
     """
@@ -62,10 +92,17 @@ def get_route(start_coords, end_coords):
     geometry is the actual road-shaped path as a list of [lon, lat] points —
     not just the two endpoints — pulled from the geojson response.
     """
-    headers = {"Authorization": ORS_API_KEY, "Content-Type": "application/json"}
+    api_key = get_ors_api_key()
+    if not api_key:
+        print("  ❌ Error: ORS_API_KEY is missing. Please set your API key in the .env file.")
+        return None, None, None
+    headers = {"Authorization": api_key, "Content-Type": "application/json"}
     body = {"coordinates": [start_coords, end_coords]}
     try:
         r = requests.post(ROUTE_URL, json=body, headers=headers, timeout=10)
+        if r.status_code in (401, 403):
+            print(f"  ❌ Error: Invalid OpenRouteService API key (HTTP {r.status_code}) during routing.")
+            return None, None, None
         r.raise_for_status()
         data = r.json()
         feature = data["features"][0]
@@ -73,7 +110,7 @@ def get_route(start_coords, end_coords):
         geometry = feature["geometry"]["coordinates"]
         return summary["distance"], summary["duration"], geometry
     except (requests.RequestException, KeyError, IndexError) as e:
-        print(f"  Route request failed: {e}")
+        print(f"  ❌ Routing failed: {e}")
         return None, None, None
 
 
@@ -284,8 +321,12 @@ def generate_map(cities, coords, route_geometry=None, filename="trip_map.html"):
 def show_map_window(filename):
     """Opens the generated map in its own native app window instead of a browser tab."""
     abs_path = os.path.abspath(filename)
-    webview.create_window("Road Trip Planner — Route Map", abs_path, width=1000, height=700)
-    webview.start()
+    if webview is not None:
+        webview.create_window("Road Trip Planner — Route Map", abs_path, width=1000, height=700)
+        webview.start()
+    else:
+        import webbrowser
+        webbrowser.open(f"file://{abs_path}")
 
 
 # --- Main ---

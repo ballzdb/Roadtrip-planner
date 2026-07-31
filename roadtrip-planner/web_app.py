@@ -45,17 +45,48 @@ def haversine(coord1, coord2):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return EARTH_RADIUS_KM * c
 
+def get_ors_api_key():
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    local_env = os.path.join(base_dir, ".env")
+    parent_env = os.path.join(base_dir, "..", ".env")
+
+    if os.path.exists(local_env):
+        load_dotenv(local_env, override=True)
+    if os.path.exists(parent_env):
+        load_dotenv(parent_env, override=True)
+
+    key = os.getenv("ORS_API_KEY")
+    if not key or not key.strip() or key.strip() == "your_openrouteservice_api_key_here":
+        return None
+    return key.strip()
+
 # --- Geocoding ---
 def get_coordinates(city_name):
-    headers = {"Authorization": ORS_API_KEY}
+    api_key = get_ors_api_key()
+    if not api_key:
+        print("ERROR: ORS_API_KEY is missing or not configured in .env file.")
+        return None, "OpenRouteService API key is missing. Please add ORS_API_KEY to your .env file."
+    headers = {"Authorization": api_key}
     params = {"text": city_name}
     try:
-        r = requests.get(GEOCODE_URL, headers=headers, params=params, timeout=5)
+        r = requests.get(GEOCODE_URL, headers=headers, params=params, timeout=10)
+        if r.status_code in (401, 403):
+            print(f"ERROR: Invalid ORS_API_KEY (HTTP {r.status_code})")
+            return None, "Invalid OpenRouteService API key (HTTP 401/403). Please check your ORS_API_KEY in the .env file."
+        if r.status_code == 429:
+            return None, "OpenRouteService API rate limit exceeded. Please wait a moment and try again."
         r.raise_for_status()
         data = r.json()
-        return data["features"][0]["geometry"]["coordinates"]
-    except (requests.RequestException, KeyError, IndexError) as e:
-        return None
+        features = data.get("features", [])
+        if not features:
+            return None, f"Could not find coordinates for city: '{city_name}'. Please check the city name."
+        return features[0]["geometry"]["coordinates"], None
+    except requests.RequestException as e:
+        print(f"Geocoding request error for '{city_name}': {e}")
+        return None, f"Network error connecting to geocoding API for '{city_name}'."
+    except (KeyError, IndexError) as e:
+        print(f"Geocoding data parse error for '{city_name}': {e}")
+        return None, f"Could not parse geocoding response for '{city_name}'."
 
 # --- Routing ---
 def get_route(start_coords, end_coords):
@@ -63,10 +94,17 @@ def get_route(start_coords, end_coords):
     Returns (distance_m, duration_s, geometry).
     geometry is the actual road-shaped path as a list of [lon, lat] points.
     """
-    headers = {"Authorization": ORS_API_KEY, "Content-Type": "application/json"}
+    api_key = get_ors_api_key()
+    if not api_key:
+        print("ERROR: ORS_API_KEY is missing or not configured in .env file.")
+        return None, None, None
+    headers = {"Authorization": api_key, "Content-Type": "application/json"}
     body = {"coordinates": [start_coords, end_coords]}
     try:
         r = requests.post(ROUTE_URL, json=body, headers=headers, timeout=10)
+        if r.status_code in (401, 403):
+            print(f"ERROR: Invalid ORS_API_KEY in get_route (HTTP {r.status_code})")
+            return None, None, None
         r.raise_for_status()
         data = r.json()
         feature = data["features"][0]
@@ -74,6 +112,7 @@ def get_route(start_coords, end_coords):
         geometry = feature["geometry"]["coordinates"]
         return summary["distance"], summary["duration"], geometry
     except (requests.RequestException, KeyError, IndexError) as e:
+        print(f"Routing API error: {e}")
         return None, None, None
 
 # --- Fuel price ---
@@ -264,9 +303,9 @@ def geocode():
     city = data.get('city')
     if not city:
         return jsonify({'error': 'City is required'}), 400
-    coords = get_coordinates(city)
+    coords, error_msg = get_coordinates(city)
     if coords is None:
-        return jsonify({'error': f'Could not geocode city: {city}'}), 404
+        return jsonify({'error': error_msg or f'Could not geocode city: {city}'}), 400
     return jsonify({'coords': coords})
 
 @app.route('/api/route', methods=['POST'])

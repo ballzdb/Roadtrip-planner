@@ -236,7 +236,7 @@ document.addEventListener('DOMContentLoaded', () => {
             for (let i = 0; i < geoResponses.length; i++) {
                 const resp = geoResponses[i];
                 if (!resp.coords) {
-                    throw new Error(`Could not geocode city: ${cities[i]}`);
+                    throw new Error(resp.error || `Could not geocode city: ${cities[i]}`);
                 }
                 coords.push(resp.coords);
             }
