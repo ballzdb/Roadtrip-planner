@@ -4,6 +4,7 @@ import requests
 import xml.etree.ElementTree as ET
 import time
 import uuid
+import json
 from itertools import permutations, combinations
 from dotenv import load_dotenv
 import folium
@@ -15,8 +16,37 @@ load_dotenv()
 EARTH_RADIUS_KM = 6371
 ORS_API_KEY = os.getenv("ORS_API_KEY")
 GEOCODE_URL = "https://api.openrouteservice.org/geocode/search"
+REVERSE_GEOCODE_URL = "https://api.openrouteservice.org/geocode/reverse"
 ROUTE_URL = "https://api.openrouteservice.org/v2/directions/driving-car/geojson"
 FUEL_URL = "https://www.fueleconomy.gov/ws/rest/fuelprices"
+
+# EIA API v2 — U.S. Energy Information Administration
+# Provides weekly retail gasoline prices by state, region, and grade
+# DEMO_KEY works without registration (rate-limited ~30 req/hr)
+EIA_BASE_URL = "https://api.eia.gov/v2/petroleum/pri/gnd/data/"
+EIA_API_KEY = os.getenv("EIA_API_KEY", "DEMO_KEY")
+
+# Open-Meteo — free weather forecast API (no key needed)
+OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
+
+# EIA duoarea codes for US states
+# Maps state abbreviation (uppercase) -> EIA duoarea code
+STATE_TO_EIA = {
+    'AL': 'SAL', 'AK': None, 'AZ': 'SAZ', 'AR': 'SAR', 'CA': 'SCA',
+    'CO': 'SCO', 'CT': 'SCT', 'DE': 'SDE', 'FL': 'SFL', 'GA': 'SGA',
+    'HI': None, 'ID': 'SID', 'IL': 'SIL', 'IN': 'SIN', 'IA': 'SIA',
+    'KS': 'SKS', 'KY': 'SKY', 'LA': 'SLA', 'ME': 'SME', 'MD': 'SMD',
+    'MA': 'SMA', 'MI': 'SMI', 'MN': 'SMN', 'MS': 'SMS', 'MO': 'SMO',
+    'MT': 'SMT', 'NE': 'SNE', 'NV': 'SNV', 'NH': 'SNH', 'NJ': 'SNJ',
+    'NM': 'SNM', 'NY': 'SNY', 'NC': 'SNC', 'ND': 'SND', 'OH': 'SOH',
+    'OK': 'SOK', 'OR': 'SOR', 'PA': 'SPA', 'RI': 'SRI', 'SC': 'SSC',
+    'SD': 'SSD', 'TN': 'STN', 'TX': 'STX', 'UT': 'SUT', 'VT': 'SVT',
+    'VA': 'SVA', 'WA': 'SWA', 'WV': 'SWV', 'WI': 'SWI', 'WY': 'SWY',
+    'DC': 'SDC'
+}
+
+# EPA CO2 emissions: 8,887 grams CO2 per gallon of gasoline
+CO2_GRAMS_PER_GALLON = 8887
 
 CAR_TYPES = {
     "economy": 35,
@@ -115,16 +145,136 @@ def get_route(start_coords, end_coords):
         print(f"Routing API error: {e}")
         return None, None, None
 
-# --- Fuel price ---
-def get_fuel_prices():
-    """Fetch all available fuel prices from the API."""
+# --- Reverse-geocode to US state ---
+def get_state_from_coords(lon, lat):
+    """Reverse-geocode [lon, lat] to a US state abbreviation using ORS."""
+    api_key = get_ors_api_key()
+    if not api_key:
+        return None
+    try:
+        headers = {"Authorization": api_key}
+        params = {"point.lon": lon, "point.lat": lat, "size": 1, "layers": "region"}
+        r = requests.get(REVERSE_GEOCODE_URL, headers=headers, params=params, timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            features = data.get("features", [])
+            if features:
+                props = features[0].get("properties", {})
+                region_a = props.get("region_a")  # e.g. "CA", "TX"
+                if region_a and len(region_a) == 2:
+                    return region_a.upper()
+    except Exception as e:
+        print(f"  Reverse geocode error: {e}")
+    return None
+
+# --- EIA Gas Prices (primary source) ---
+def get_eia_gas_prices(duoarea_codes=None, weeks=1):
+    """
+    Fetch retail gasoline prices from the EIA API v2.
+    duoarea_codes: list of EIA duoarea codes (e.g., ['SCA', 'STX', 'NUS'])
+                   If None, fetches national average (NUS).
+    weeks: number of most recent weeks to fetch (for trend data)
+    Returns list of dicts with keys: period, area_name, product, price
+    """
+    params = {
+        'api_key': EIA_API_KEY,
+        'frequency': 'weekly',
+        'sort[0][column]': 'period',
+        'sort[0][direction]': 'desc',
+        'length': str(max(weeks * 10, 20)),  # enough rows for multi-area + weeks
+    }
+    # Product facets: Regular, Midgrade, Premium, Diesel
+    for prod in ['EPMR', 'EPMM', 'EPMP', 'EPMD']:
+        params.setdefault('facets[product][]', [])
+    # Build product facet params manually since requests doesn't handle repeated keys well
+    product_params = '&'.join([
+        f'facets[product][]={p}' for p in ['EPMR', 'EPMM', 'EPMP', 'EPMD']
+    ])
+    # Area facets
+    areas = duoarea_codes or ['NUS']
+    area_params = '&'.join([f'facets[duoarea][]={a}' for a in areas])
+
+    url = f"{EIA_BASE_URL}?api_key={EIA_API_KEY}&frequency=weekly&{product_params}&{area_params}&sort[0][column]=period&sort[0][direction]=desc&length={max(weeks * len(areas) * 4, 40)}"
+
+    try:
+        r = requests.get(url, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        results = []
+        for row in data.get('response', {}).get('data', []):
+            value = row.get('value')
+            if value is not None:
+                results.append({
+                    'period': row.get('period'),
+                    'area_code': row.get('duoarea'),
+                    'area_name': row.get('area-name', '').title(),
+                    'product': row.get('product'),
+                    'product_name': row.get('product-name', ''),
+                    'price': float(value)
+                })
+        return results
+    except Exception as e:
+        print(f"  EIA API error: {e}")
+        return []
+
+
+def get_eia_prices_for_states(state_abbrevs):
+    """
+    Given a list of state abbreviations, fetch the latest gas prices per state.
+    Returns dict: {state_abbrev: {regular: price, midgrade: price, premium: price, diesel: price}}
+    """
+    # Map state abbreviations to EIA duoarea codes
+    duoarea_codes = []
+    state_map = {}  # duoarea_code -> state_abbrev
+    for st in set(state_abbrevs):
+        if st and st in STATE_TO_EIA and STATE_TO_EIA[st]:
+            code = STATE_TO_EIA[st]
+            duoarea_codes.append(code)
+            state_map[code] = st
+
+    if not duoarea_codes:
+        # Fallback to national average
+        duoarea_codes = ['NUS']
+        state_map['NUS'] = 'US'
+
+    rows = get_eia_gas_prices(duoarea_codes, weeks=1)
+
+    # EIA product codes -> friendly names
+    product_map = {
+        'EPMR': 'regular',
+        'EPMM': 'midgrade',
+        'EPMP': 'premium',
+        'EPMD': 'diesel'
+    }
+
+    result = {}
+    # Get only the most recent period per area+product
+    seen = set()
+    for row in rows:
+        area = row['area_code']
+        product = row['product']
+        key = (area, product)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        st = state_map.get(area, area)
+        if st not in result:
+            result[st] = {'state': st, 'area_name': row['area_name']}
+        friendly = product_map.get(product, product)
+        result[st][friendly] = row['price']
+
+    return result
+
+
+# --- Legacy fuel prices (fallback) ---
+def get_fuel_prices_legacy():
+    """Fetch all available fuel prices from fueleconomy.gov (fallback)."""
     try:
         r = requests.get(FUEL_URL, timeout=3)
         r.raise_for_status()
         root = ET.fromstring(r.text)
         fuels = {}
-
-        # Extract all available fuel types
         fuel_types = ['regular', 'midgrade', 'premium', 'diesel', 'cng', 'e85', 'electric', 'lpg']
         for fuel in fuel_types:
             elem = root.find(fuel)
@@ -133,54 +283,182 @@ def get_fuel_prices():
                     fuels[fuel] = float(elem.text)
                 except ValueError:
                     pass
-
         return fuels if fuels else None
     except Exception as e:
-        print(f"  Could not fetch live fuel prices: {e}")
+        print(f"  Could not fetch legacy fuel prices: {e}")
         return None
+
+
+# Fallback prices
+FALLBACK_PRICES = {
+    'regular': 3.50,
+    'midgrade': 3.70,
+    'premium': 3.90,
+    'diesel': 4.20,
+    'cng': 2.50,
+    'e85': 2.80,
+    'electric': 0.12,
+    'lpg': 3.00
+}
+
 
 @app.route('/api/fuel_price', methods=['GET'])
 def fuel_price():
-    """Get all fuel prices."""
-    fuels = get_fuel_prices()
-    if fuels is None:
-        # Fallback prices if API fails
-        fuels = {
-            'regular': 3.50,
-            'midgrade': 3.70,
-            'premium': 3.90,
-            'diesel': 4.20,
-            'cng': 2.50,
-            'e85': 2.80,
-            'electric': 0.12,
-            'lpg': 3.00
-        }
-    return jsonify({'price_per_gallon': fuels})
+    """Get all fuel prices (tries EIA national, then legacy, then fallback)."""
+    # Try EIA national average first
+    eia_data = get_eia_prices_for_states([])
+    if eia_data and 'US' in eia_data:
+        fuels = {k: v for k, v in eia_data['US'].items() if k in ('regular', 'midgrade', 'premium', 'diesel')}
+        if fuels:
+            return jsonify({'price_per_gallon': fuels, 'source': 'eia'})
+    # Legacy fallback
+    fuels = get_fuel_prices_legacy()
+    if fuels:
+        return jsonify({'price_per_gallon': fuels, 'source': 'fueleconomy.gov'})
+    return jsonify({'price_per_gallon': FALLBACK_PRICES, 'source': 'fallback'})
+
+
+@app.route('/api/gas-prices', methods=['POST'])
+def gas_prices_by_route():
+    """Get gas prices for each state along the route."""
+    data = request.get_json()
+    coords = data.get('coords', [])  # list of [lon, lat]
+    if not coords:
+        return jsonify({'error': 'Coordinates required'}), 400
+
+    # Determine state for each coordinate
+    states = []
+    for coord in coords:
+        st = get_state_from_coords(coord[0], coord[1])
+        states.append(st)
+
+    # Get prices for unique states
+    unique_states = [s for s in set(states) if s]
+    prices_by_state = get_eia_prices_for_states(unique_states)
+
+    # If EIA failed, try legacy
+    if not prices_by_state:
+        legacy = get_fuel_prices_legacy() or FALLBACK_PRICES
+        prices_by_state = {'US': {**legacy, 'state': 'US', 'area_name': 'National Average'}}
+
+    return jsonify({
+        'states': states,
+        'prices_by_state': prices_by_state,
+        'source': 'eia' if unique_states else 'fallback'
+    })
+
+
+@app.route('/api/gas-prices/national', methods=['GET'])
+def gas_prices_national():
+    """Get national average gas prices + 8-week trend."""
+    # Fetch national average for the last 8 weeks
+    rows = get_eia_gas_prices(['NUS'], weeks=8)
+
+    # Build trend data (regular only, by week)
+    trend = []
+    seen_periods = set()
+    for row in rows:
+        if row['product'] == 'EPMR' and row['period'] not in seen_periods:
+            seen_periods.add(row['period'])
+            trend.append({'period': row['period'], 'price': row['price']})
+
+    # Sort chronologically
+    trend.sort(key=lambda x: x['period'])
+
+    # Get current prices (most recent week, all grades)
+    current = {}
+    product_map = {'EPMR': 'regular', 'EPMM': 'midgrade', 'EPMP': 'premium', 'EPMD': 'diesel'}
+    most_recent_period = None
+    for row in rows:
+        if most_recent_period is None:
+            most_recent_period = row['period']
+        if row['period'] == most_recent_period:
+            friendly = product_map.get(row['product'])
+            if friendly:
+                current[friendly] = row['price']
+
+    if not current:
+        legacy = get_fuel_prices_legacy() or FALLBACK_PRICES
+        current = legacy
+        source = 'fallback'
+    else:
+        source = 'eia'
+
+    return jsonify({
+        'current': current,
+        'trend': trend,
+        'period': most_recent_period,
+        'source': source
+    })
+
 
 def get_fuel_price(fuel_type='regular'):
-    """Get price for a specific fuel type, with fallback."""
-    fuels = get_fuel_prices()
+    """Get price for a specific fuel type, with EIA -> legacy -> fallback chain."""
+    # Try EIA national
+    eia_data = get_eia_prices_for_states([])
+    if eia_data and 'US' in eia_data:
+        price = eia_data['US'].get(fuel_type)
+        if price:
+            return price
+
+    # Legacy fallback
+    fuels = get_fuel_prices_legacy()
     if fuels and fuel_type in fuels:
         return fuels[fuel_type]
 
-    # Fallback prices if API fails
-    fallback_prices = {
-        'regular': 3.50,
-        'midgrade': 3.70,
-        'premium': 3.90,
-        'diesel': 4.20,
-        'cng': 2.50,
-        'e85': 2.80,
-        'electric': 0.12,
-        'lpg': 3.00
-    }
+    # Hard fallback
+    return FALLBACK_PRICES.get(fuel_type, 3.50)
 
-    if fuel_type in fallback_prices:
-        print(f"  Using fallback price for {fuel_type}: ${fallback_prices[fuel_type]:.2f}/gal")
-        return fallback_prices[fuel_type]
-    else:
-        print(f"  Unknown fuel type '{fuel_type}', using regular fallback: $3.50/gal")
-        return 3.50
+
+# --- Weather forecast (Open-Meteo) ---
+def get_weather_for_coords(coord_list):
+    """
+    Fetch 3-day weather forecast for a list of [lon, lat] coordinates.
+    Uses the free Open-Meteo API (no key required).
+    Returns list of weather dicts.
+    """
+    results = []
+    for coord in coord_list:
+        lon, lat = coord[0], coord[1]
+        try:
+            params = {
+                'latitude': lat,
+                'longitude': lon,
+                'daily': 'temperature_2m_max,temperature_2m_min,precipitation_sum,weathercode',
+                'temperature_unit': 'fahrenheit',
+                'precipitation_unit': 'inch',
+                'timezone': 'auto',
+                'forecast_days': 3
+            }
+            r = requests.get(OPEN_METEO_URL, params=params, timeout=5)
+            if r.status_code == 200:
+                data = r.json()
+                daily = data.get('daily', {})
+                days = []
+                dates = daily.get('time', [])
+                highs = daily.get('temperature_2m_max', [])
+                lows = daily.get('temperature_2m_min', [])
+                precip = daily.get('precipitation_sum', [])
+                codes = daily.get('weathercode', [])
+                for i in range(len(dates)):
+                    days.append({
+                        'date': dates[i],
+                        'high_f': highs[i] if i < len(highs) else None,
+                        'low_f': lows[i] if i < len(lows) else None,
+                        'precip_in': precip[i] if i < len(precip) else 0,
+                        'weather_code': codes[i] if i < len(codes) else 0
+                    })
+                results.append({
+                    'lat': lat,
+                    'lon': lon,
+                    'timezone': data.get('timezone', ''),
+                    'days': days
+                })
+            else:
+                results.append({'lat': lat, 'lon': lon, 'days': [], 'error': f'HTTP {r.status_code}'})
+        except Exception as e:
+            results.append({'lat': lat, 'lon': lon, 'days': [], 'error': str(e)})
+    return results
 
 # --- Fuel cost ---
 def estimate_fuel_cost(distance_km, mpg, price_per_gallon):
@@ -360,9 +638,20 @@ def optimize():
     ordered_cities = [cities[i] for i in order]
     ordered_coords = [coords[i] for i in order]
 
+    # Reverse-geocode each stop to get its US state
+    stop_states = []
+    for coord in ordered_coords:
+        st = get_state_from_coords(coord[0], coord[1])
+        stop_states.append(st)
+
+    # Fetch EIA gas prices for states along the route
+    unique_states = list(set(s for s in stop_states if s))
+    state_prices = get_eia_prices_for_states(unique_states) if unique_states else {}
+
     # Calculate road distances for the optimized route
     total_km = 0
     total_h = 0
+    total_gallons = 0
     full_geometry = []
     legs = []  # per leg details
     warnings = []  # warnings for long legs >10h
@@ -375,21 +664,46 @@ def optimize():
         total_km += seg_km
         total_h += seg_h
         full_geometry.extend(geometry)
+
+        # Determine per-leg gas price: use origin state price if available
+        leg_state = stop_states[i]
+        leg_price = None
+        leg_state_name = None
+        if leg_state and leg_state in state_prices:
+            leg_price = state_prices[leg_state].get(fuel_type)
+            leg_state_name = state_prices[leg_state].get('area_name', leg_state)
+        if leg_price is None:
+            leg_price = fuel_price_data.get(fuel_type, fuel_price_data.get('regular', 3.50))
+
+        leg_cost = estimate_fuel_cost(seg_km, mpg, leg_price)
+        leg_miles = seg_km * 0.621371
+        leg_gallons = leg_miles / mpg
+        total_gallons += leg_gallons
+
         legs.append({
             'from': ordered_cities[i],
             'to': ordered_cities[i+1],
             'distance_km': seg_km,
             'duration_h': seg_h,
-            'geometry': geometry  # optional, could be large; we might omit to keep payload small
+            'state': leg_state,
+            'state_name': leg_state_name,
+            'gas_price': leg_price,
+            'fuel_cost': leg_cost
         })
         if seg_h > 10.0:
             warnings.append(f"⚠️ Leg {i+1}: {ordered_cities[i]} → {ordered_cities[i+1]} takes {seg_h:.1f} hours (>10h). Consider breaking this leg with an overnight stop.")
 
-    # Determine fuel price per gallon for selected fuel type
+    # Total fuel cost (sum of per-leg costs for state-aware pricing)
+    total_cost = sum(leg['fuel_cost'] for leg in legs)
+    # Fallback: also compute with flat price for comparison
     price_per_gallon = fuel_price_data.get(fuel_type, fuel_price_data.get('regular', 3.50))
-    cost = estimate_fuel_cost(total_km, mpg, price_per_gallon)
+    flat_cost = estimate_fuel_cost(total_km, mpg, price_per_gallon)
+
     straight_km = sum(haversine(ordered_coords[i], ordered_coords[i+1]) for i in range(len(ordered_coords)-1))
     road_overhead = (total_km / straight_km - 1) * 100 if straight_km > 0 else 0
+
+    # CO2 emissions estimate (EPA: 8,887 grams CO2 per gallon)
+    co2_kg = (total_gallons * CO2_GRAMS_PER_GALLON) / 1000
 
     # Generate map
     map_filename = generate_map(ordered_cities, ordered_coords, route_geometry=full_geometry)
@@ -398,9 +712,14 @@ def optimize():
         'success': True,
         'ordered_cities': ordered_cities,
         'ordered_coords': ordered_coords,
+        'stop_states': stop_states,
+        'state_prices': state_prices,
         'total_distance_km': total_km,
         'total_duration_h': total_h,
-        'estimated_fuel_cost': cost,
+        'estimated_fuel_cost': total_cost,
+        'flat_fuel_cost': flat_cost,
+        'total_gallons': total_gallons,
+        'co2_kg': co2_kg,
         'straight_line_km': straight_km,
         'road_overhead_percent': road_overhead,
         'method': method,
@@ -408,7 +727,7 @@ def optimize():
         'mpg': mpg,
         'fuel_price_per_gallon': price_per_gallon,
         'fuel_type': fuel_type,
-        'fuel_price_all': fuel_price_data,  # send all fuel types for display
+        'fuel_price_all': fuel_price_data,
         'legs': legs,
         'warnings': warnings,
         'map_filename': map_filename
