@@ -29,6 +29,16 @@ EIA_API_KEY = os.getenv("EIA_API_KEY", "DEMO_KEY")
 # Open-Meteo — free weather forecast API (no key needed)
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 
+# Overpass (OpenStreetMap) — points of interest along the route
+OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+OVERPASS_USER_AGENT = "roadtrip-planner/1.0"
+LODGING_TOURISM_TAGS = {'hotel', 'motel', 'hostel', 'guest_house'}
+POI_SAMPLE_POINTS = 3
+POI_MAX_PER_CATEGORY = 25
+# Overpass throttles hard (429/504) and each extra element costs latency,
+# so cap what a single query returns.
+POI_QUERY_LIMIT = 60
+
 # EIA duoarea codes for US states
 # Maps state abbreviation (uppercase) -> EIA duoarea code
 STATE_TO_EIA = {
@@ -796,6 +806,32 @@ def serve_map(filename):
     return send_from_directory(MAPS_DIR, filename)
 
 # --- Points of Interest (Overpass API) ---
+def overpass_query(query, attempts=3):
+    """
+    Run an Overpass QL query, returning the response or None.
+    Overpass answers 406 without a User-Agent and expects the query in the
+    `data` form field; it also returns 429/504 when busy, so retry briefly.
+    """
+    for attempt in range(attempts):
+        try:
+            resp = requests.post(
+                OVERPASS_URL,
+                data={'data': query},
+                headers={'User-Agent': OVERPASS_USER_AGENT},
+                timeout=45
+            )
+            if resp.status_code == 200:
+                return resp
+            print(f"Overpass returned HTTP {resp.status_code}")
+            if resp.status_code not in (429, 502, 503, 504):
+                return None
+        except requests.RequestException as e:
+            print(f"Overpass request error: {e}")
+        if attempt < attempts - 1:
+            time.sleep(5 * (attempt + 1))
+    return None
+
+
 def get_pois_along_route(coords, radius_miles=5):
     """
     coords: list of [lon, lat] (from ORS)
@@ -804,44 +840,36 @@ def get_pois_along_route(coords, radius_miles=5):
     """
     if not coords:
         return {'gas_station': [], 'restaurant': [], 'lodging': []}
-    # Overpass API endpoint
-    overpass_url = "https://overpass-api.de/api/interpreter"
     # Sample points to avoid too many requests (every nth point)
-    step = max(1, len(coords) // 10)  # at most 10 points
-    sampled = coords[::step]
-    if len(sampled) > 10:
-        sampled = sampled[:10]
+    step = max(1, len(coords) // POI_SAMPLE_POINTS)
+    sampled = coords[::step][:POI_SAMPLE_POINTS]
     pois = {'gas_station': [], 'restaurant': [], 'lodging': []}
     for lon, lat in sampled:
         # Convert radius miles to meters
         radius_meters = int(radius_miles * 1609.34)
-        # Build Overpass QL query
+        # Build Overpass QL query. Lodging lives under the tourism key,
+        # not amenity.
         query = f"""
         [out:json][timeout:25];
         (
           node["amenity"="fuel"](around:{radius_meters},{lat},{lon});
           node["amenity"="restaurant"](around:{radius_meters},{lat},{lon});
-          node["amenity"="lodging"](around:{radius_meters},{lat},{lon});
+          node["tourism"~"^(hotel|motel|hostel|guest_house)$"](around:{radius_meters},{lat},{lon});
         );
-        out center;
+        out center {POI_QUERY_LIMIT};
         """
         try:
-            resp = requests.post(overpass_url, data=query, timeout=30)
-            if resp.status_code != 200:
+            resp = overpass_query(query)
+            if resp is None:
                 continue
             data = resp.json()
             for element in data.get('elements', []):
                 tags = element.get('tags', {})
                 name = tags.get('name') or 'Unnamed'
                 # Address approximation
-                addr_parts = []
-                if tags.get('addr:street'):
-                    addr_parts.append(tags['addr:street'])
-                if tags.get('addr:housenumber'):
-                    addr_parts.insert(0, tags['addr:housenumber'])
-                if tags.get('addr:city'):
-                    addr_parts.append(tags['addr:city'])
-                address = ', '.join(addr_parts) if addr_parts else ''
+                street = ' '.join(p for p in (tags.get('addr:housenumber'), tags.get('addr:street')) if p)
+                addr_parts = [p for p in (street, tags.get('addr:city')) if p]
+                address = ', '.join(addr_parts)
                 poi = {
                     'name': name,
                     'address': address,
@@ -853,7 +881,7 @@ def get_pois_along_route(coords, radius_miles=5):
                     pois['gas_station'].append(poi)
                 elif amenity == 'restaurant':
                     pois['restaurant'].append(poi)
-                elif amenity == 'lodging':
+                elif tags.get('tourism') in LODGING_TOURISM_TAGS:
                     pois['lodging'].append(poi)
         except Exception as e:
             print(f"POI request error: {e}")
@@ -867,7 +895,9 @@ def get_pois_along_route(coords, radius_miles=5):
             if identifier not in seen:
                 seen.add(identifier)
                 unique.append(p)
-        pois[key] = unique
+        # Named places first, so the list isn't a wall of "Unnamed".
+        unique.sort(key=lambda p: p['name'] == 'Unnamed')
+        pois[key] = unique[:POI_MAX_PER_CATEGORY]
     return pois
 
 
