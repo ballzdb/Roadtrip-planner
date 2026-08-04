@@ -48,6 +48,20 @@ STATE_TO_EIA = {
 # EPA CO2 emissions: 8,887 grams CO2 per gallon of gasoline
 CO2_GRAMS_PER_GALLON = 8887
 
+# UI route type -> ORS `preference`
+ROUTE_PREFERENCES = {
+    "fastest": "fastest",
+    "shortest": "shortest",
+    "eco": "recommended"
+}
+
+# UI avoid checkbox -> ORS `options.avoid_features`
+AVOID_FEATURES = {
+    "tolls": "tollways",
+    "highways": "highways",
+    "ferries": "ferries"
+}
+
 CAR_TYPES = {
     "economy": 35,
     "sedan": 30,
@@ -119,22 +133,55 @@ def get_coordinates(city_name):
         return None, f"Could not parse geocoding response for '{city_name}'."
 
 # --- Routing ---
-def get_route(start_coords, end_coords):
+def build_route_options(route_type=None, avoid=None):
+    """
+    Translate the UI's route preferences into the extra fields ORS expects
+    on a directions request. "eco" has no ORS equivalent, so it maps to the
+    recommended preference with highways avoided.
+    """
+    options = {}
+    route_type = (route_type or "").strip().lower()
+
+    preference = ROUTE_PREFERENCES.get(route_type)
+    if preference:
+        options["preference"] = preference
+
+    features = [
+        AVOID_FEATURES[name]
+        for name, enabled in (avoid or {}).items()
+        if enabled and name in AVOID_FEATURES
+    ]
+    if route_type == "eco" and "highways" not in features:
+        features.append("highways")
+    if features:
+        options["options"] = {"avoid_features": features}
+
+    return options
+
+
+def get_route(start_coords, end_coords, route_options=None):
     """
     Returns (distance_m, duration_s, geometry).
     geometry is the actual road-shaped path as a list of [lon, lat] points.
+    route_options comes from build_route_options() and is merged into the request.
     """
     api_key = get_ors_api_key()
     if not api_key:
         print("ERROR: ORS_API_KEY is missing or not configured in .env file.")
         return None, None, None
     headers = {"Authorization": api_key, "Content-Type": "application/json"}
-    body = {"coordinates": [start_coords, end_coords]}
+    body = {"coordinates": [start_coords, end_coords], **(route_options or {})}
     try:
         r = requests.post(ROUTE_URL, json=body, headers=headers, timeout=10)
         if r.status_code in (401, 403):
             print(f"ERROR: Invalid ORS_API_KEY in get_route (HTTP {r.status_code})")
             return None, None, None
+        if r.status_code == 400 and route_options:
+            # The requested preference or avoid_features may be unroutable for
+            # this pair of points; fall back to a plain route rather than
+            # failing the whole trip.
+            print(f"Routing rejected options {route_options}, retrying without them")
+            return get_route(start_coords, end_coords)
         r.raise_for_status()
         data = r.json()
         feature = data["features"][0]
@@ -593,7 +640,8 @@ def route():
     end = data.get('end')
     if not start or not end:
         return jsonify({'error': 'Start and end coordinates are required'}), 400
-    distance_m, duration_s, geometry = get_route(start, end)
+    route_options = build_route_options(data.get('route_type'), data.get('avoid'))
+    distance_m, duration_s, geometry = get_route(start, end, route_options)
     if distance_m is None:
         return jsonify({'error': 'Route calculation failed'}), 500
     return jsonify({
@@ -618,6 +666,7 @@ def optimize():
     mpg = data.get('mpg')
     fuel_price_data = data.get('fuel_price')  # dict of fuel type to price
     fuel_type = data.get('fuel_type', 'regular')  # default to regular
+    route_options = build_route_options(data.get('route_type'), data.get('avoid'))
     if not cities or not coords or not car_type or mpg is None or not fuel_price_data:
         return jsonify({'error': 'Missing required parameters'}), 400
     if len(cities) != len(coords):
@@ -656,7 +705,7 @@ def optimize():
     legs = []  # per leg details
     warnings = []  # warnings for long legs >10h
     for i in range(len(ordered_cities) - 1):
-        d_m, dur_s, geometry = get_route(ordered_coords[i], ordered_coords[i + 1])
+        d_m, dur_s, geometry = get_route(ordered_coords[i], ordered_coords[i + 1], route_options)
         if d_m is None:
             return jsonify({'error': f'Route calculation failed for {ordered_cities[i]} → {ordered_cities[i+1]}'}), 500
         seg_km = d_m / 1000
@@ -723,6 +772,8 @@ def optimize():
         'straight_line_km': straight_km,
         'road_overhead_percent': road_overhead,
         'method': method,
+        'route_type': data.get('route_type'),
+        'avoid': data.get('avoid'),
         'car_type': car_type,
         'mpg': mpg,
         'fuel_price_per_gallon': price_per_gallon,
