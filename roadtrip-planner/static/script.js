@@ -88,8 +88,20 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('cities').value = trip.data.cities.join('\n');
         document.getElementById('car-type').value = trip.data.car_type;
         document.getElementById('fuel-type').value = trip.data.fuel_type;
+        applyRouteOptions(trip.data.route_type, trip.data.avoid);
         // Trigger form submission to compute again
         form.dispatchEvent(new Event('submit'));
+    }
+
+    // Restore the Route Options controls from saved/shared trip data
+    function applyRouteOptions(routeType, avoid) {
+        if (routeType) {
+            document.getElementById('route-type').value = routeType;
+        }
+        const selected = avoid || {};
+        document.getElementById('avoid-tolls').checked = !!selected.tolls;
+        document.getElementById('avoid-highways').checked = !!selected.highways;
+        document.getElementById('avoid-ferries').checked = !!selected.ferries;
     }
 
     // Generate shareable URL from current trip data
@@ -98,6 +110,13 @@ document.addEventListener('DOMContentLoaded', () => {
         params.set('cities', tripData.cities.join('|'));
         params.set('car', tripData.car_type);
         params.set('fuel', tripData.fuel_type);
+        params.set('route', tripData.route_type);
+        const avoid = Object.entries(tripData.avoid || {})
+            .filter(([, enabled]) => enabled)
+            .map(([name]) => name);
+        if (avoid.length > 0) {
+            params.set('avoid', avoid.join('|'));
+        }
         const baseUrl = window.location.origin + window.location.pathname;
         return `${baseUrl}?${params.toString()}`;
     }
@@ -112,6 +131,12 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('cities').value = citiesParam.split('|').join('\n');
             document.getElementById('car-type').value = carParam;
             document.getElementById('fuel-type').value = fuelParam;
+            const avoidParam = (params.get('avoid') || '').split('|').filter(Boolean);
+            applyRouteOptions(params.get('route'), {
+                tolls: avoidParam.includes('tolls'),
+                highways: avoidParam.includes('highways'),
+                ferries: avoidParam.includes('ferries')
+            });
             // Auto-submit after a short delay to let UI settle
             setTimeout(() => form.dispatchEvent(new Event('submit')), 500);
         }
@@ -347,6 +372,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 <div><strong>Car Type:</strong> ${optimizeData.car_type} (${optimizeData.mpg} MPG)</div>
                 <div><strong>Optimization Method:</strong> ${optimizeData.method}</div>
                 <div><strong>Road vs Straight Distance:</strong> ${optimizeData.road_overhead_percent.toFixed(1)}% longer</div>
+                <div><strong>Fuel Used:</strong> ${optimizeData.total_gallons.toFixed(1)} gal</div>
+                <div><strong>CO₂ Emissions:</strong> ${optimizeData.co2_kg.toFixed(1)} kg</div>
+                ${legsTable(optimizeData.legs)}
             `;
             tripInfo.classList.remove('d-none');
 
@@ -471,11 +499,42 @@ document.addEventListener('DOMContentLoaded', () => {
         exportAsJson(tripData);
     });
 
+// Per-leg breakdown table
+function legsTable(legs) {
+    if (!legs || legs.length === 0) return '';
+    const rows = legs.map(leg => `
+        <tr>
+            <td>${leg.from} → ${leg.to}</td>
+            <td>${leg.distance_km.toFixed(1)} km</td>
+            <td>${leg.duration_h.toFixed(2)} h</td>
+            <td>${leg.state_name || leg.state || '—'}</td>
+            <td>$${leg.gas_price.toFixed(2)}/gal</td>
+            <td>$${leg.fuel_cost.toFixed(2)}</td>
+        </tr>
+    `).join('');
+    return `
+        <div class="mt-3"><strong>Legs:</strong></div>
+        <div class="table-responsive">
+            <table class="table table-sm align-middle">
+                <thead>
+                    <tr><th>Leg</th><th>Distance</th><th>Time</th><th>Gas priced in</th><th>Price</th><th>Cost</th></tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>
+        </div>
+    `;
+}
+
     // POI and Elevation Functions
 function displayPOIs(poisData) {
     const poisList = document.getElementById('pois-list');
     poisList.innerHTML = '';
     const poiTypes = ['gas_station', 'restaurant', 'lodging'];
+    const total = poiTypes.reduce((sum, type) => sum + (poisData[type] || []).length, 0);
+    if (total === 0) {
+        poisList.innerHTML = '<div class="col-12 text-muted">No points of interest found — OpenStreetMap may be rate limiting, try again in a moment.</div>';
+        return;
+    }
     poiTypes.forEach(type => {
         const pois = poisData[type] || [];
         if (pois.length === 0) return;

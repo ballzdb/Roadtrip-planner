@@ -29,6 +29,16 @@ EIA_API_KEY = os.getenv("EIA_API_KEY", "DEMO_KEY")
 # Open-Meteo — free weather forecast API (no key needed)
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 
+# Overpass (OpenStreetMap) — points of interest along the route
+OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+OVERPASS_USER_AGENT = "roadtrip-planner/1.0"
+LODGING_TOURISM_TAGS = {'hotel', 'motel', 'hostel', 'guest_house'}
+POI_SAMPLE_POINTS = 3
+POI_MAX_PER_CATEGORY = 25
+# Overpass throttles hard (429/504) and each extra element costs latency,
+# so cap what a single query returns.
+POI_QUERY_LIMIT = 60
+
 # EIA duoarea codes for US states
 # Maps state abbreviation (uppercase) -> EIA duoarea code
 STATE_TO_EIA = {
@@ -47,6 +57,20 @@ STATE_TO_EIA = {
 
 # EPA CO2 emissions: 8,887 grams CO2 per gallon of gasoline
 CO2_GRAMS_PER_GALLON = 8887
+
+# UI route type -> ORS `preference`
+ROUTE_PREFERENCES = {
+    "fastest": "fastest",
+    "shortest": "shortest",
+    "eco": "recommended"
+}
+
+# UI avoid checkbox -> ORS `options.avoid_features`
+AVOID_FEATURES = {
+    "tolls": "tollways",
+    "highways": "highways",
+    "ferries": "ferries"
+}
 
 CAR_TYPES = {
     "economy": 35,
@@ -119,22 +143,55 @@ def get_coordinates(city_name):
         return None, f"Could not parse geocoding response for '{city_name}'."
 
 # --- Routing ---
-def get_route(start_coords, end_coords):
+def build_route_options(route_type=None, avoid=None):
+    """
+    Translate the UI's route preferences into the extra fields ORS expects
+    on a directions request. "eco" has no ORS equivalent, so it maps to the
+    recommended preference with highways avoided.
+    """
+    options = {}
+    route_type = (route_type or "").strip().lower()
+
+    preference = ROUTE_PREFERENCES.get(route_type)
+    if preference:
+        options["preference"] = preference
+
+    features = [
+        AVOID_FEATURES[name]
+        for name, enabled in (avoid or {}).items()
+        if enabled and name in AVOID_FEATURES
+    ]
+    if route_type == "eco" and "highways" not in features:
+        features.append("highways")
+    if features:
+        options["options"] = {"avoid_features": features}
+
+    return options
+
+
+def get_route(start_coords, end_coords, route_options=None):
     """
     Returns (distance_m, duration_s, geometry).
     geometry is the actual road-shaped path as a list of [lon, lat] points.
+    route_options comes from build_route_options() and is merged into the request.
     """
     api_key = get_ors_api_key()
     if not api_key:
         print("ERROR: ORS_API_KEY is missing or not configured in .env file.")
         return None, None, None
     headers = {"Authorization": api_key, "Content-Type": "application/json"}
-    body = {"coordinates": [start_coords, end_coords]}
+    body = {"coordinates": [start_coords, end_coords], **(route_options or {})}
     try:
         r = requests.post(ROUTE_URL, json=body, headers=headers, timeout=10)
         if r.status_code in (401, 403):
             print(f"ERROR: Invalid ORS_API_KEY in get_route (HTTP {r.status_code})")
             return None, None, None
+        if r.status_code == 400 and route_options:
+            # The requested preference or avoid_features may be unroutable for
+            # this pair of points; fall back to a plain route rather than
+            # failing the whole trip.
+            print(f"Routing rejected options {route_options}, retrying without them")
+            return get_route(start_coords, end_coords)
         r.raise_for_status()
         data = r.json()
         feature = data["features"][0]
@@ -593,7 +650,8 @@ def route():
     end = data.get('end')
     if not start or not end:
         return jsonify({'error': 'Start and end coordinates are required'}), 400
-    distance_m, duration_s, geometry = get_route(start, end)
+    route_options = build_route_options(data.get('route_type'), data.get('avoid'))
+    distance_m, duration_s, geometry = get_route(start, end, route_options)
     if distance_m is None:
         return jsonify({'error': 'Route calculation failed'}), 500
     return jsonify({
@@ -618,6 +676,7 @@ def optimize():
     mpg = data.get('mpg')
     fuel_price_data = data.get('fuel_price')  # dict of fuel type to price
     fuel_type = data.get('fuel_type', 'regular')  # default to regular
+    route_options = build_route_options(data.get('route_type'), data.get('avoid'))
     if not cities or not coords or not car_type or mpg is None or not fuel_price_data:
         return jsonify({'error': 'Missing required parameters'}), 400
     if len(cities) != len(coords):
@@ -656,7 +715,7 @@ def optimize():
     legs = []  # per leg details
     warnings = []  # warnings for long legs >10h
     for i in range(len(ordered_cities) - 1):
-        d_m, dur_s, geometry = get_route(ordered_coords[i], ordered_coords[i + 1])
+        d_m, dur_s, geometry = get_route(ordered_coords[i], ordered_coords[i + 1], route_options)
         if d_m is None:
             return jsonify({'error': f'Route calculation failed for {ordered_cities[i]} → {ordered_cities[i+1]}'}), 500
         seg_km = d_m / 1000
@@ -723,6 +782,8 @@ def optimize():
         'straight_line_km': straight_km,
         'road_overhead_percent': road_overhead,
         'method': method,
+        'route_type': data.get('route_type'),
+        'avoid': data.get('avoid'),
         'car_type': car_type,
         'mpg': mpg,
         'fuel_price_per_gallon': price_per_gallon,
@@ -745,6 +806,32 @@ def serve_map(filename):
     return send_from_directory(MAPS_DIR, filename)
 
 # --- Points of Interest (Overpass API) ---
+def overpass_query(query, attempts=3):
+    """
+    Run an Overpass QL query, returning the response or None.
+    Overpass answers 406 without a User-Agent and expects the query in the
+    `data` form field; it also returns 429/504 when busy, so retry briefly.
+    """
+    for attempt in range(attempts):
+        try:
+            resp = requests.post(
+                OVERPASS_URL,
+                data={'data': query},
+                headers={'User-Agent': OVERPASS_USER_AGENT},
+                timeout=45
+            )
+            if resp.status_code == 200:
+                return resp
+            print(f"Overpass returned HTTP {resp.status_code}")
+            if resp.status_code not in (429, 502, 503, 504):
+                return None
+        except requests.RequestException as e:
+            print(f"Overpass request error: {e}")
+        if attempt < attempts - 1:
+            time.sleep(5 * (attempt + 1))
+    return None
+
+
 def get_pois_along_route(coords, radius_miles=5):
     """
     coords: list of [lon, lat] (from ORS)
@@ -753,44 +840,36 @@ def get_pois_along_route(coords, radius_miles=5):
     """
     if not coords:
         return {'gas_station': [], 'restaurant': [], 'lodging': []}
-    # Overpass API endpoint
-    overpass_url = "https://overpass-api.de/api/interpreter"
     # Sample points to avoid too many requests (every nth point)
-    step = max(1, len(coords) // 10)  # at most 10 points
-    sampled = coords[::step]
-    if len(sampled) > 10:
-        sampled = sampled[:10]
+    step = max(1, len(coords) // POI_SAMPLE_POINTS)
+    sampled = coords[::step][:POI_SAMPLE_POINTS]
     pois = {'gas_station': [], 'restaurant': [], 'lodging': []}
     for lon, lat in sampled:
         # Convert radius miles to meters
         radius_meters = int(radius_miles * 1609.34)
-        # Build Overpass QL query
+        # Build Overpass QL query. Lodging lives under the tourism key,
+        # not amenity.
         query = f"""
         [out:json][timeout:25];
         (
           node["amenity"="fuel"](around:{radius_meters},{lat},{lon});
           node["amenity"="restaurant"](around:{radius_meters},{lat},{lon});
-          node["amenity"="lodging"](around:{radius_meters},{lat},{lon});
+          node["tourism"~"^(hotel|motel|hostel|guest_house)$"](around:{radius_meters},{lat},{lon});
         );
-        out center;
+        out center {POI_QUERY_LIMIT};
         """
         try:
-            resp = requests.post(overpass_url, data=query, timeout=30)
-            if resp.status_code != 200:
+            resp = overpass_query(query)
+            if resp is None:
                 continue
             data = resp.json()
             for element in data.get('elements', []):
                 tags = element.get('tags', {})
                 name = tags.get('name') or 'Unnamed'
                 # Address approximation
-                addr_parts = []
-                if tags.get('addr:street'):
-                    addr_parts.append(tags['addr:street'])
-                if tags.get('addr:housenumber'):
-                    addr_parts.insert(0, tags['addr:housenumber'])
-                if tags.get('addr:city'):
-                    addr_parts.append(tags['addr:city'])
-                address = ', '.join(addr_parts) if addr_parts else ''
+                street = ' '.join(p for p in (tags.get('addr:housenumber'), tags.get('addr:street')) if p)
+                addr_parts = [p for p in (street, tags.get('addr:city')) if p]
+                address = ', '.join(addr_parts)
                 poi = {
                     'name': name,
                     'address': address,
@@ -802,7 +881,7 @@ def get_pois_along_route(coords, radius_miles=5):
                     pois['gas_station'].append(poi)
                 elif amenity == 'restaurant':
                     pois['restaurant'].append(poi)
-                elif amenity == 'lodging':
+                elif tags.get('tourism') in LODGING_TOURISM_TAGS:
                     pois['lodging'].append(poi)
         except Exception as e:
             print(f"POI request error: {e}")
@@ -816,7 +895,9 @@ def get_pois_along_route(coords, radius_miles=5):
             if identifier not in seen:
                 seen.add(identifier)
                 unique.append(p)
-        pois[key] = unique
+        # Named places first, so the list isn't a wall of "Unnamed".
+        unique.sort(key=lambda p: p['name'] == 'Unnamed')
+        pois[key] = unique[:POI_MAX_PER_CATEGORY]
     return pois
 
 

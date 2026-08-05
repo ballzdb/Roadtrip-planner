@@ -10,6 +10,7 @@ network calls, so they run instantly and don't need an API key.
 
 import unittest
 from main import haversine, estimate_fuel_cost, brute_force_tsp, held_karp_tsp
+from web_app import build_route_options
 
 
 class TestHaversine(unittest.TestCase):
@@ -62,6 +63,28 @@ class TestTSPCorrectness(unittest.TestCase):
         order, dist = brute_force_tsp(coords)
         self.assertEqual(order, [0, 1])
         self.assertAlmostEqual(dist, haversine(coords[0], coords[1]), delta=0.01)
+
+
+class TestRouteOptions(unittest.TestCase):
+    def test_defaults_to_no_options(self):
+        self.assertEqual(build_route_options(None, None), {})
+
+    def test_shortest_sets_preference(self):
+        self.assertEqual(build_route_options("shortest", None), {"preference": "shortest"})
+
+    def test_avoid_checkboxes_map_to_ors_features(self):
+        options = build_route_options("fastest", {"tolls": True, "highways": False, "ferries": True})
+        self.assertEqual(options["preference"], "fastest")
+        self.assertEqual(sorted(options["options"]["avoid_features"]), ["ferries", "tollways"])
+
+    def test_eco_avoids_highways(self):
+        options = build_route_options("eco", {"highways": False})
+        self.assertEqual(options["preference"], "recommended")
+        self.assertEqual(options["options"]["avoid_features"], ["highways"])
+
+    def test_eco_does_not_duplicate_highways(self):
+        options = build_route_options("eco", {"highways": True})
+        self.assertEqual(options["options"]["avoid_features"], ["highways"])
 
 
 if __name__ == "__main__":

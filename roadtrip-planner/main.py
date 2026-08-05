@@ -5,6 +5,7 @@ import xml.etree.ElementTree as ET
 import time
 from itertools import permutations, combinations
 from dotenv import load_dotenv
+import folium
 try:
     import webview
 except ImportError:
