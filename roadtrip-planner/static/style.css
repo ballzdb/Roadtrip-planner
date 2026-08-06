@@ -800,6 +800,47 @@ textarea.form-control {
     border-color: rgba(255, 255, 255, 0.22);
 }
 
+/* Layout grid for form + map */
+.layout-grid {
+    display: grid;
+    grid-template-columns: 1fr 1.3fr;
+    gap: 1.25rem;
+    align-items: start;
+}
+
+.left-column {
+    position: relative;
+}
+
+.right-column {
+    position: relative;
+}
+
+@media (max-width: 992px) {
+    .layout-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .card p.lead {
+        font-size: 0.95rem;
+    }
+}
+
+/* Hero quick actions */
+#example-nyc-chi,
+#reset-form {
+    min-width: 160px;
+}
+
+/* Sticky left form on larger screens */
+@media (min-width: 992px) {
+    .left-column {
+        position: sticky;
+        top: 1.5rem;
+        align-self: start;
+    }
+}
+
 /* Form input focus glow */
 .form-control:focus,
 .form-select:focus {

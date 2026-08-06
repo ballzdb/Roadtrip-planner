@@ -98,8 +98,6 @@ document.addEventListener('DOMContentLoaded', () => {
         if (routeType) {
             document.getElementById('route-type').value = routeType;
         }
-        const selected = avoid || {};
-        document.getElementById('avoid-ferries').checked = !!selected.ferries;
     }
 
     // Generate shareable URL from current trip data
@@ -218,8 +216,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const rawFuelType = document.getElementById('fuel-type').value;
         const fuelType = rawFuelType === 'mid' ? 'midgrade' : rawFuelType;
         const routeType = document.getElementById('route-type').value;
-        const avoidFerries = document.getElementById('avoid-ferries').checked;
         const poiEnabled = document.getElementById('poi-toggle').checked;
+        const avoidSettings = {};
 
         if (!citiesText) {
             alert('Please enter at least two cities.');
@@ -285,9 +283,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     fuel_price_source_live: !!fuelPriceData.live_prices,
                     eia_enabled: fuelPriceData.eia_enabled,
                     route_type: routeType,
-                    avoid: {
-                        ferries: avoidFerries
-                    }
+                    avoid: avoidSettings
                 })
             });
             const optimizeData = await optimizeRes.json();
@@ -301,9 +297,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 car_type: carType,
                 fuel_type: fuelType,
                 route_type: routeType,
-                avoid: {
-                    ferries: avoidFerries
-                },
+                avoid: avoidSettings,
                 poi_enabled: poiEnabled,
                 fuel_price_source: fuelPriceData.source,
                 fuel_price_source_live: !!fuelPriceData.live_prices,

@@ -25,5 +25,6 @@ Once the program knows the best order to visit the cities, it calls the routing 
    ```env
    EIA_API_KEY=your_eia_api_key_here
    ```
+   Without an EIA key, the app still uses live national average gas prices from `fueleconomy.gov`, but state-specific pricing is disabled.
 4. Get a free OpenRouteService API key at [openrouteservice.org](https://openrouteservice.org/dev/#/signup).
-   Get a free EIA API key at [eia.gov/opendata/registration.php](https://www.eia.gov/opendata/registration.php).
+   Get a free EIA API key via the EIA Open Data portal: [eia.gov/opendata](https://www.eia.gov/opendata/).
