@@ -372,20 +372,22 @@ def fuel_price():
         if eia_data and 'US' in eia_data:
             fuels = {k: v for k, v in eia_data['US'].items() if k in ('regular', 'midgrade', 'premium', 'diesel')}
             if fuels:
-                return jsonify({'price_per_gallon': fuels, 'source': 'eia', 'eia_enabled': True})
+                return jsonify({'price_per_gallon': fuels, 'source': 'eia', 'eia_enabled': True, 'live_prices': True})
 
     fuels = get_fuel_prices_legacy()
     if fuels:
         return jsonify({
             'price_per_gallon': fuels,
             'source': 'fueleconomy.gov',
-            'eia_enabled': has_valid_eia_key()
+            'eia_enabled': has_valid_eia_key(),
+            'live_prices': True
         })
 
     return jsonify({
         'price_per_gallon': FALLBACK_PRICES,
         'source': 'fallback',
         'eia_enabled': has_valid_eia_key(),
+        'live_prices': False,
         'message': 'EIA state pricing disabled or unavailable, using fallback prices.'
     })
 
@@ -408,17 +410,20 @@ def gas_prices_by_route():
     unique_states = [s for s in set(states) if s]
     prices_by_state = get_eia_prices_for_states(unique_states)
 
-    # If EIA is unavailable, fallback to legacy prices for all states
-    source = 'eia' if prices_by_state and has_valid_eia_key() else 'fallback'
+    # If EIA is unavailable, fallback to legacy national prices for all states
     if not prices_by_state:
         legacy = get_fuel_prices_legacy() or FALLBACK_PRICES
         prices_by_state = {'US': {**legacy, 'state': 'US', 'area_name': 'National Average'}}
+        source = 'fueleconomy.gov'
+    else:
+        source = 'eia'
 
     return jsonify({
         'states': states,
         'prices_by_state': prices_by_state,
         'source': source,
-        'eia_enabled': has_valid_eia_key()
+        'eia_enabled': has_valid_eia_key(),
+        'live_prices': source in ('eia', 'fueleconomy.gov')
     })
 
 
@@ -692,6 +697,9 @@ def optimize():
     car_type = data.get('car_type')
     mpg = data.get('mpg')
     fuel_price_data = data.get('fuel_price')  # dict of fuel type to price
+    fuel_price_source = data.get('fuel_price_source', 'unknown')
+    fuel_price_source_live = data.get('fuel_price_source_live', False)
+    eia_enabled = data.get('eia_enabled', False)
     fuel_type = data.get('fuel_type', 'regular')  # default to regular
     if fuel_type == 'mid':
         fuel_type = 'midgrade'
@@ -733,6 +741,7 @@ def optimize():
     full_geometry = []
     legs = []  # per leg details
     warnings = []  # warnings for long legs >10h
+    overnight_recommendations = []
     for i in range(len(ordered_cities) - 1):
         d_m, dur_s, geometry = get_route(ordered_coords[i], ordered_coords[i + 1], route_options)
         if d_m is None:
@@ -758,7 +767,7 @@ def optimize():
         leg_gallons = leg_miles / mpg
         total_gallons += leg_gallons
 
-        legs.append({
+        leg_data = {
             'from': ordered_cities[i],
             'to': ordered_cities[i+1],
             'distance_km': seg_km,
@@ -767,9 +776,28 @@ def optimize():
             'state_name': leg_state_name,
             'gas_price': leg_price,
             'fuel_cost': leg_cost
-        })
+        }
+        legs.append(leg_data)
         if seg_h > 10.0:
             warnings.append(f"⚠️ Leg {i+1}: {ordered_cities[i]} → {ordered_cities[i+1]} takes {seg_h:.1f} hours (>10h). Consider breaking this leg with an overnight stop.")
+            midpoint = None
+            if geometry:
+                midpoint = geometry[len(geometry) // 2]
+            if midpoint is None:
+                # Fallback to geographic midpoint of origin/destination
+                midpoint = [
+                    (ordered_coords[i][0] + ordered_coords[i + 1][0]) / 2,
+                    (ordered_coords[i][1] + ordered_coords[i + 1][1]) / 2
+                ]
+            lodging = get_lodging_near(midpoint, radius_miles=12, max_results=5)
+            overnight_recommendations.append({
+                'leg_index': i + 1,
+                'from': ordered_cities[i],
+                'to': ordered_cities[i+1],
+                'duration_h': seg_h,
+                'midpoint': {'lat': midpoint[1], 'lon': midpoint[0]},
+                'lodging': lodging
+            })
 
     # Total fuel cost (sum of per-leg costs for state-aware pricing)
     total_cost = sum(leg['fuel_cost'] for leg in legs)
@@ -808,8 +836,12 @@ def optimize():
         'fuel_price_per_gallon': price_per_gallon,
         'fuel_type': fuel_type,
         'fuel_price_all': fuel_price_data,
+        'fuel_price_source': fuel_price_source,
+        'fuel_price_source_live': fuel_price_source_live,
+        'eia_enabled': eia_enabled,
         'legs': legs,
         'warnings': warnings,
+        'overnight_recommendations': overnight_recommendations,
         'map_filename': map_filename
     })
 
@@ -918,6 +950,60 @@ def get_pois_along_route(coords, radius_miles=5):
         unique.sort(key=lambda p: p['name'] == 'Unnamed')
         pois[key] = unique[:POI_MAX_PER_CATEGORY]
     return pois
+
+
+def get_lodging_near(coord, radius_miles=12, max_results=6):
+    """Find lodging near a coordinate using Overpass and OSM tourism tags."""
+    if not coord or len(coord) != 2:
+        return []
+    lon, lat = coord
+    radius_meters = int(radius_miles * 1609.34)
+    query = f"""
+        [out:json][timeout:25];
+        (
+          node["tourism"~"^(hotel|motel|hostel|guest_house)$"](around:{radius_meters},{lat},{lon});
+          way["tourism"~"^(hotel|motel|hostel|guest_house)$"](around:{radius_meters},{lat},{lon});
+          relation["tourism"~"^(hotel|motel|hostel|guest_house)$"](around:{radius_meters},{lat},{lon});
+        );
+        out center {POI_QUERY_LIMIT};
+    """
+    lodging = []
+    try:
+        resp = overpass_query(query)
+        if resp is None:
+            return []
+        data = resp.json()
+        for element in data.get('elements', []):
+            tags = element.get('tags', {})
+            name = tags.get('name') or 'Unnamed lodging'
+            lat_value = element.get('lat') or element.get('center', {}).get('lat')
+            lon_value = element.get('lon') or element.get('center', {}).get('lon')
+            if lat_value is None or lon_value is None:
+                continue
+            street = ' '.join(p for p in (tags.get('addr:housenumber'), tags.get('addr:street')) if p)
+            addr_parts = [p for p in (street, tags.get('addr:city'), tags.get('addr:state')) if p]
+            address = ', '.join(addr_parts)
+            distance_m = int(haversine(coord, [lon_value, lat_value]) * 1000)
+            lodging.append({
+                'name': name,
+                'address': address,
+                'lat': lat_value,
+                'lon': lon_value,
+                'distance_m': distance_m
+            })
+    except Exception as e:
+        print(f"Lodging search error: {e}")
+    # Deduplicate by name+location and sort by proximity
+    seen = set()
+    unique = []
+    for p in sorted(lodging, key=lambda p: p['distance_m']):
+        identifier = (p['name'], p['lat'], p['lon'])
+        if identifier not in seen:
+            seen.add(identifier)
+            unique.append(p)
+            if len(unique) >= max_results:
+                break
+    return unique
 
 
 # --- Flask routes for POI ---

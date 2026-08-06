@@ -99,8 +99,6 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('route-type').value = routeType;
         }
         const selected = avoid || {};
-        document.getElementById('avoid-tolls').checked = !!selected.tolls;
-        document.getElementById('avoid-highways').checked = !!selected.highways;
         document.getElementById('avoid-ferries').checked = !!selected.ferries;
     }
 
@@ -133,8 +131,6 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('fuel-type').value = fuelParam === 'mid' ? 'midgrade' : fuelParam;
             const avoidParam = (params.get('avoid') || '').split('|').filter(Boolean);
             applyRouteOptions(params.get('route'), {
-                tolls: avoidParam.includes('tolls'),
-                highways: avoidParam.includes('highways'),
                 ferries: avoidParam.includes('ferries')
             });
             // Auto-submit after a short delay to let UI settle
@@ -222,8 +218,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const rawFuelType = document.getElementById('fuel-type').value;
         const fuelType = rawFuelType === 'mid' ? 'midgrade' : rawFuelType;
         const routeType = document.getElementById('route-type').value;
-        const avoidTolls = document.getElementById('avoid-tolls').checked;
-        const avoidHighways = document.getElementById('avoid-highways').checked;
         const avoidFerries = document.getElementById('avoid-ferries').checked;
         const poiEnabled = document.getElementById('poi-toggle').checked;
 
@@ -274,8 +268,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // Get fuel price (all types)
             const fuelPriceRes = await fetch('/api/fuel_price');
-            const fuelPriceData = await fuelPriceRes.json(); // Expects {price_per_gallon: {...}}
-            // The backend returns {price_per_gallon: {regular:..., mid:..., premium:..., diesel:...}}
+            const fuelPriceData = await fuelPriceRes.json(); // Expects {price_per_gallon: {...}, source: '...', eia_enabled: bool}
 
             // Optimize route
             const optimizeRes = await fetch('/api/optimize', {
@@ -288,10 +281,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     mpg,
                     fuel_price: fuelPriceData.price_per_gallon,
                     fuel_type: fuelType,
+                    fuel_price_source: fuelPriceData.source,
+                    fuel_price_source_live: !!fuelPriceData.live_prices,
+                    eia_enabled: fuelPriceData.eia_enabled,
                     route_type: routeType,
                     avoid: {
-                        tolls: avoidTolls,
-                        highways: avoidHighways,
                         ferries: avoidFerries
                     }
                 })
@@ -308,11 +302,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 fuel_type: fuelType,
                 route_type: routeType,
                 avoid: {
-                    tolls: avoidTolls,
-                    highways: avoidHighways,
                     ferries: avoidFerries
                 },
                 poi_enabled: poiEnabled,
+                fuel_price_source: fuelPriceData.source,
+                fuel_price_source_live: !!fuelPriceData.live_prices,
+                eia_enabled: fuelPriceData.eia_enabled,
                 ordered_cities: optimizeData.ordered_cities,
                 ordered_coords: optimizeData.ordered_coords,
                 total_distance_km: optimizeData.total_distance_km,
@@ -359,6 +354,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 <div><strong>Total Distance:</strong> ${optimizeData.total_distance_km.toFixed(2)} km</div>
                 <div><strong>Estimated Time:</strong> ${optimizeData.total_duration_h.toFixed(2)} hours</div>
                 <div><strong>Fuel Cost:</strong> $${optimizeData.estimated_fuel_cost.toFixed(2)}</div>
+                <div><strong>Fuel Price Source:</strong> ${optimizeData.fuel_price_source || 'unknown'}${optimizeData.fuel_price_source_live ? ' (live)' : ''}</div>
+                <div><strong>State-level pricing:</strong> ${optimizeData.eia_enabled ? 'enabled' : 'disabled'}</div>
                 <div><strong>Fuel Prices:</strong></div>
                 <div class="fuel-prices">
                     ${Object.entries(optimizeData.fuel_price_all)
@@ -386,6 +383,9 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 tripWarnings.classList.add('d-none');
             }
+
+            // Display overnight recommendations for legs over 10h
+            displayOvernightRecommendations(optimizeData.overnight_recommendations || []);
 
             // Show actions
             tripActions.classList.remove('d-none');
@@ -553,6 +553,42 @@ document.addEventListener('DOMContentLoaded', () => {
             typeDiv.appendChild(listGroup);
             poisList.appendChild(typeDiv);
         });
+    }
+
+    function displayOvernightRecommendations(recommendations) {
+        const recSection = document.getElementById('overnight-recommendations');
+        const recList = document.getElementById('overnight-recommendations-list');
+        recList.innerHTML = '';
+        if (!recommendations || recommendations.length === 0) {
+            recSection.classList.add('d-none');
+            return;
+        }
+
+        recommendations.forEach(rec => {
+            const card = document.createElement('div');
+            card.className = 'col-12';
+            const lodgingItems = rec.lodging && rec.lodging.length > 0
+                ? rec.lodging.map(hotel => `
+                    <li><strong>${hotel.name}</strong>${hotel.address ? ` — ${hotel.address}` : ''}${hotel.distance_m ? ` (${(hotel.distance_m / 1609.34).toFixed(1)} mi from midpoint)` : ''}</li>
+                `).join('')
+                : '<li class="text-muted">No nearby lodging found in OpenStreetMap for this segment.</li>';
+
+            card.innerHTML = `
+                <div class="overnight-card card bg-dark bg-opacity-20 border border-white border-opacity-10 p-3">
+                    <div class="d-flex align-items-center justify-content-between mb-2">
+                        <div>
+                            <strong>Leg ${rec.leg_index}:</strong> ${rec.from} → ${rec.to}
+                        </div>
+                        <div class="text-muted">${rec.duration_h.toFixed(1)} h</div>
+                    </div>
+                    <div><small class="text-muted">Suggested search near midpoint</small></div>
+                    <ul class="mt-2 mb-0 overnight-list list-unstyled">${lodgingItems}</ul>
+                </div>
+            `;
+            recList.appendChild(card);
+        });
+
+        recSection.classList.remove('d-none');
     }
 
 
