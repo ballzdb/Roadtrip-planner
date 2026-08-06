@@ -130,7 +130,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (citiesParam && carParam && fuelParam) {
             document.getElementById('cities').value = citiesParam.split('|').join('\n');
             document.getElementById('car-type').value = carParam;
-            document.getElementById('fuel-type').value = fuelParam;
+            document.getElementById('fuel-type').value = fuelParam === 'mid' ? 'midgrade' : fuelParam;
             const avoidParam = (params.get('avoid') || '').split('|').filter(Boolean);
             applyRouteOptions(params.get('route'), {
                 tolls: avoidParam.includes('tolls'),
@@ -219,7 +219,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const citiesText = document.getElementById('cities').value.trim();
         const carType = document.getElementById('car-type').value;
-        const fuelType = document.getElementById('fuel-type').value;
+        const rawFuelType = document.getElementById('fuel-type').value;
+        const fuelType = rawFuelType === 'mid' ? 'midgrade' : rawFuelType;
         const routeType = document.getElementById('route-type').value;
         const avoidTolls = document.getElementById('avoid-tolls').checked;
         const avoidHighways = document.getElementById('avoid-highways').checked;
@@ -330,25 +331,25 @@ document.addEventListener('DOMContentLoaded', () => {
                 // POIs
                 fetch('/api/pois', {
                     method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         coords: optimizeData.ordered_coords,
                         radius_miles: 5
                     })
                 })
-                .then(res => res.json())
-                .then(poisData => {
-                    displayPOIs(poisData.poi);
-                    poiSection.classList.remove('d-none');
-                })
-                .catch(err => {
-                    console.error('POI fetch error:', err);
-                });
+                    .then(res => res.json())
+                    .then(poisData => {
+                        displayPOIs(poisData.poi);
+                        poiSection.classList.remove('d-none');
+                    })
+                    .catch(err => {
+                        console.error('POI fetch error:', err);
+                    });
             } else {
                 poiSection.classList.add('d-none');
             }
 
-            
+
             // Show results section
             resultsSection.classList.remove('d-none');
 
@@ -361,13 +362,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 <div><strong>Fuel Prices:</strong></div>
                 <div class="fuel-prices">
                     ${Object.entries(optimizeData.fuel_price_all)
-                        .map(([type, price]) => `
+                    .map(([type, price]) => `
                             <div class="fuel-price-item ${type === optimizeData.fuel_type ? 'active' : ''}">
                                 <span class="fuel-type">${type.toUpperCase()}:</span>
                                 <span class="fuel-price">$${price.toFixed(2)}/gal</span>
                             </div>
                         `)
-                        .join('')}
+                    .join('')}
                 </div>
                 <div><strong>Car Type:</strong> ${optimizeData.car_type} (${optimizeData.mpg} MPG)</div>
                 <div><strong>Optimization Method:</strong> ${optimizeData.method}</div>
@@ -499,10 +500,10 @@ document.addEventListener('DOMContentLoaded', () => {
         exportAsJson(tripData);
     });
 
-// Per-leg breakdown table
-function legsTable(legs) {
-    if (!legs || legs.length === 0) return '';
-    const rows = legs.map(leg => `
+    // Per-leg breakdown table
+    function legsTable(legs) {
+        if (!legs || legs.length === 0) return '';
+        const rows = legs.map(leg => `
         <tr>
             <td>${leg.from} → ${leg.to}</td>
             <td>${leg.distance_km.toFixed(1)} km</td>
@@ -512,7 +513,7 @@ function legsTable(legs) {
             <td>$${leg.fuel_cost.toFixed(2)}</td>
         </tr>
     `).join('');
-    return `
+        return `
         <div class="mt-3"><strong>Legs:</strong></div>
         <div class="table-responsive">
             <table class="table table-sm align-middle">
@@ -523,39 +524,39 @@ function legsTable(legs) {
             </table>
         </div>
     `;
-}
+    }
 
     // POI and Elevation Functions
-function displayPOIs(poisData) {
-    const poisList = document.getElementById('pois-list');
-    poisList.innerHTML = '';
-    const poiTypes = ['gas_station', 'restaurant', 'lodging'];
-    const total = poiTypes.reduce((sum, type) => sum + (poisData[type] || []).length, 0);
-    if (total === 0) {
-        poisList.innerHTML = '<div class="col-12 text-muted">No points of interest found — OpenStreetMap may be rate limiting, try again in a moment.</div>';
-        return;
-    }
-    poiTypes.forEach(type => {
-        const pois = poisData[type] || [];
-        if (pois.length === 0) return;
-        const typeDiv = document.createElement('div');
-        typeDiv.className = 'col-12 mb-3';
-        typeDiv.innerHTML = `<h6>${type.replace('_', ' ').toUpperCase()}</h6>`;
-        const listGroup = document.createElement('div');
-        listGroup.className = 'list-group';
-        pois.forEach(poi => {
-            const item = document.createElement('div');
-            item.className = 'list-group-item list-group-item-action';
-            item.innerHTML = `<strong>${poi.name || 'Unnamed'}</strong><br><small class="text-muted">${poi.address || ''}</small>`;
-            listGroup.appendChild(item);
+    function displayPOIs(poisData) {
+        const poisList = document.getElementById('pois-list');
+        poisList.innerHTML = '';
+        const poiTypes = ['gas_station', 'restaurant', 'lodging'];
+        const total = poiTypes.reduce((sum, type) => sum + (poisData[type] || []).length, 0);
+        if (total === 0) {
+            poisList.innerHTML = '<div class="col-12 text-muted">No points of interest found — OpenStreetMap may be rate limiting, try again in a moment.</div>';
+            return;
+        }
+        poiTypes.forEach(type => {
+            const pois = poisData[type] || [];
+            if (pois.length === 0) return;
+            const typeDiv = document.createElement('div');
+            typeDiv.className = 'col-12 mb-3';
+            typeDiv.innerHTML = `<h6>${type.replace('_', ' ').toUpperCase()}</h6>`;
+            const listGroup = document.createElement('div');
+            listGroup.className = 'list-group';
+            pois.forEach(poi => {
+                const item = document.createElement('div');
+                item.className = 'list-group-item list-group-item-action';
+                item.innerHTML = `<strong>${poi.name || 'Unnamed'}</strong><br><small class="text-muted">${poi.address || ''}</small>`;
+                listGroup.appendChild(item);
+            });
+            typeDiv.appendChild(listGroup);
+            poisList.appendChild(typeDiv);
         });
-        typeDiv.appendChild(listGroup);
-        poisList.appendChild(typeDiv);
-    });
-}
+    }
 
 
-// Initial load: check for URL params and load saved trips list
+    // Initial load: check for URL params and load saved trips list
     loadSavedTrips();
     initFromUrl();
 

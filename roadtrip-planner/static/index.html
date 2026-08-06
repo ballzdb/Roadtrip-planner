@@ -1,10 +1,12 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#0f0c29">
-    <meta name="description" content="Plan your multi-city road trip with optimized routes, fuel cost estimates, and interactive maps.">
+    <meta name="description"
+        content="Plan your multi-city road trip with optimized routes, fuel cost estimates, and interactive maps.">
     <title>Road Trip Planner</title>
     <!-- Google Font -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -13,30 +15,41 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
 </head>
+
 <body>
     <!-- Floating decorative elements -->
     <div class="floating-elements" aria-hidden="true">
-        <div class="floating-item" style="--size: 80px; --move-y: -30px; --move-x: 20px; --rotate: 15deg; --duration: 16s; --delay: 0s;"></div>
-        <div class="floating-item" style="--size: 60px; --move-y: -20px; --move-x: -15px; --rotate: -10deg; --duration: 14s; --delay: 2s;"></div>
-        <div class="floating-item" style="--size: 100px; --move-y: -25px; --move-x: 25px; --rotate: 8deg; --duration: 18s; --delay: 4s;"></div>
-        <div class="floating-item" style="--size: 50px; --move-y: -15px; --move-x: -10px; --rotate: -5deg; --duration: 12s; --delay: 1s;"></div>
-        <div class="floating-item" style="--size: 70px; --move-y: -22px; --move-x: 18px; --rotate: 12deg; --duration: 15s; --delay: 3s;"></div>
+        <div class="floating-item"
+            style="--size: 80px; --move-y: -30px; --move-x: 20px; --rotate: 15deg; --duration: 16s; --delay: 0s;"></div>
+        <div class="floating-item"
+            style="--size: 60px; --move-y: -20px; --move-x: -15px; --rotate: -10deg; --duration: 14s; --delay: 2s;">
+        </div>
+        <div class="floating-item"
+            style="--size: 100px; --move-y: -25px; --move-x: 25px; --rotate: 8deg; --duration: 18s; --delay: 4s;"></div>
+        <div class="floating-item"
+            style="--size: 50px; --move-y: -15px; --move-x: -10px; --rotate: -5deg; --duration: 12s; --delay: 1s;">
+        </div>
+        <div class="floating-item"
+            style="--size: 70px; --move-y: -22px; --move-x: 18px; --rotate: 12deg; --duration: 15s; --delay: 3s;"></div>
     </div>
 
     <div class="container-fluid py-4">
         <header class="text-center mb-4 d-flex align-items-center justify-content-between">
             <div>
                 <h1><i class="bi bi-truck-front me-2"></i>Road Trip Planner</h1>
-                <p class="lead">Plan your multi-city road trip with optimized routes, fuel cost estimates, and interactive maps.</p>
+                <p class="lead">Plan your multi-city road trip with optimized routes, fuel cost estimates, and
+                    interactive maps.</p>
             </div>
             <div class="dropdown">
-                <button class="btn btn-outline-light dropdown-toggle" type="button" id="theme-toggle" data-bs-toggle="dropdown" aria-expanded="false">
+                <button class="btn btn-outline-light dropdown-toggle" type="button" id="theme-toggle"
+                    data-bs-toggle="dropdown" aria-expanded="false">
                     <i class="bi bi-moon-stars me-1"></i>Theme
                 </button>
                 <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="theme-toggle">
                     <li><button class="dropdown-item" id="theme-light"><i class="bi bi-sun me-2"></i>Light</button></li>
                     <li><button class="dropdown-item" id="theme-dark"><i class="bi bi-moon me-2"></i>Dark</button></li>
-                    <li><button class="dropdown-item" id="theme-auto"><i class="bi bi-circle-half me-2"></i>System</button></li>
+                    <li><button class="dropdown-item" id="theme-auto"><i
+                                class="bi bi-circle-half me-2"></i>System</button></li>
                 </ul>
             </div>
         </header>
@@ -49,7 +62,8 @@
                         <h2 class="h4 mb-4"><i class="bi bi-gear-wide me-2"></i>Plan Your Trip</h2>
                         <form id="trip-form">
                             <div class="mb-3">
-                                <label for="cities" class="form-label fw-bold">Cities (one per line, at least 2):</label>
+                                <label for="cities" class="form-label fw-bold">Cities (one per line, at least
+                                    2):</label>
                                 <textarea id="cities" class="form-control" rows="4" placeholder="New York
 Philadelphia
 Washington DC" required></textarea>
@@ -68,12 +82,12 @@ Washington DC" required></textarea>
                                 <label for="fuel-type" class="form-label fw-bold">Fuel Type:</label>
                                 <select id="fuel-type" class="form-select">
                                     <option value="regular" selected>Regular</option>
-                                    <option value="mid">Mid-grade</option>
+                                    <option value="midgrade">Mid-grade</option>
                                     <option value="premium">Premium</option>
                                     <option value="diesel">Diesel</option>
                                 </select>
                             </div>
-                                                        <div class="mb-3">
+                            <div class="mb-3">
                                 <label for="route-options" class="form-label fw-bold">Route Options:</label>
                                 <div class="row g-2">
                                     <div class="col-md-6">
@@ -87,15 +101,18 @@ Washington DC" required></textarea>
                                     <div class="col-md-6">
                                         <label class="form-label">Avoid:</label>
                                         <div class="form-check form-check-inline">
-                                            <input class="form-check-input" type="checkbox" id="avoid-tolls" value="tolls">
+                                            <input class="form-check-input" type="checkbox" id="avoid-tolls"
+                                                value="tolls">
                                             <label class="form-check-label" for="avoid-tolls">Tolls</label>
                                         </div>
                                         <div class="form-check form-check-inline">
-                                            <input class="form-check-input" type="checkbox" id="avoid-highways" value="highways">
+                                            <input class="form-check-input" type="checkbox" id="avoid-highways"
+                                                value="highways">
                                             <label class="form-check-label" for="avoid-highways">Highways</label>
                                         </div>
                                         <div class="form-check form-check-inline">
-                                            <input class="form-check-input" type="checkbox" id="avoid-ferries" value="ferries">
+                                            <input class="form-check-input" type="checkbox" id="avoid-ferries"
+                                                value="ferries">
                                             <label class="form-check-label" for="avoid-ferries">Ferries</label>
                                         </div>
                                     </div>
@@ -129,7 +146,7 @@ Washington DC" required></textarea>
                             <div id="trip-summary" class="row g-3"></div>
                         </div>
 
-                        
+
                         <!-- Points of Interest -->
                         <div id="pois-section" class="mb-4 d-none">
                             <h3 class="h5 mb-3"><i class="bi bi-geo-alt-fill me-2"></i>Points of Interest</h3>
@@ -165,7 +182,8 @@ Washington DC" required></textarea>
                                     <i class="bi bi-copy"></i> Copy
                                 </button>
                             </div>
-                            <small class="text-muted mt-1 d-block">Share this link to let others view your trip plan.</small>
+                            <small class="text-muted mt-1 d-block">Share this link to let others view your trip
+                                plan.</small>
                         </div>
 
                         <!-- Saved Trips Loader -->
@@ -185,7 +203,9 @@ Washington DC" required></textarea>
                         <div id="map-section" class="mb-4">
                             <h3 class="h5 mb-3"><i class="bi bi-map me-2"></i>Route Map</h3>
                             <div id="map-container" class="ratio ratio-16x9">
-                                <iframe id="trip-map" srcdoc="<p>Loading map...</p>" class="position-absolute top-0 start-0 w-100 h-100 border-0" allowfullscreen></iframe>
+                                <iframe id="trip-map" srcdoc="<p>Loading map...</p>"
+                                    class="position-absolute top-0 start-0 w-100 h-100 border-0"
+                                    allowfullscreen></iframe>
                             </div>
                         </div>
                     </div>
@@ -200,4 +220,5 @@ Washington DC" required></textarea>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="script.js"></script>
 </body>
+
 </html>

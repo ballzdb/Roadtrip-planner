@@ -21,4 +21,9 @@ Once the program knows the best order to visit the cities, it calls the routing 
    ```env
    ORS_API_KEY=your_actual_api_key_here
    ```
-3. Get a free API key at [openrouteservice.org](https://openrouteservice.org/dev/#/signup).
+3. Optionally add an EIA API key to enable state-level gas pricing in the web app:
+   ```env
+   EIA_API_KEY=your_eia_api_key_here
+   ```
+4. Get a free OpenRouteService API key at [openrouteservice.org](https://openrouteservice.org/dev/#/signup).
+   Get a free EIA API key at [eia.gov/opendata/registration.php](https://www.eia.gov/opendata/registration.php).

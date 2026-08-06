@@ -22,9 +22,13 @@ FUEL_URL = "https://www.fueleconomy.gov/ws/rest/fuelprices"
 
 # EIA API v2 — U.S. Energy Information Administration
 # Provides weekly retail gasoline prices by state, region, and grade
-# DEMO_KEY works without registration (rate-limited ~30 req/hr)
+# DEMO_KEY works without registration but is rate-limited and should not be relied on for production.
 EIA_BASE_URL = "https://api.eia.gov/v2/petroleum/pri/gnd/data/"
 EIA_API_KEY = os.getenv("EIA_API_KEY", "DEMO_KEY")
+
+
+def has_valid_eia_key():
+    return bool(EIA_API_KEY and EIA_API_KEY.strip() and EIA_API_KEY != "DEMO_KEY")
 
 # Open-Meteo — free weather forecast API (no key needed)
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
@@ -233,28 +237,26 @@ def get_eia_gas_prices(duoarea_codes=None, weeks=1):
     weeks: number of most recent weeks to fetch (for trend data)
     Returns list of dicts with keys: period, area_name, product, price
     """
+    if not has_valid_eia_key():
+        print("  EIA API disabled: no valid EIA_API_KEY provided.")
+        return []
+
+    areas = duoarea_codes or ['NUS']
     params = {
         'api_key': EIA_API_KEY,
         'frequency': 'weekly',
         'sort[0][column]': 'period',
         'sort[0][direction]': 'desc',
-        'length': str(max(weeks * 10, 20)),  # enough rows for multi-area + weeks
+        'length': str(max(weeks * len(areas) * 4, 40)),
+        'facets[product][]': ['EPMR', 'EPMM', 'EPMP', 'EPMD'],
+        'facets[duoarea][]': areas,
     }
-    # Product facets: Regular, Midgrade, Premium, Diesel
-    for prod in ['EPMR', 'EPMM', 'EPMP', 'EPMD']:
-        params.setdefault('facets[product][]', [])
-    # Build product facet params manually since requests doesn't handle repeated keys well
-    product_params = '&'.join([
-        f'facets[product][]={p}' for p in ['EPMR', 'EPMM', 'EPMP', 'EPMD']
-    ])
-    # Area facets
-    areas = duoarea_codes or ['NUS']
-    area_params = '&'.join([f'facets[duoarea][]={a}' for a in areas])
-
-    url = f"{EIA_BASE_URL}?api_key={EIA_API_KEY}&frequency=weekly&{product_params}&{area_params}&sort[0][column]=period&sort[0][direction]=desc&length={max(weeks * len(areas) * 4, 40)}"
 
     try:
-        r = requests.get(url, timeout=10)
+        r = requests.get(EIA_BASE_URL, params=params, timeout=10)
+        if r.status_code == 429:
+            print("  EIA API rate limit exceeded.")
+            return []
         r.raise_for_status()
         data = r.json()
         results = []
@@ -280,6 +282,9 @@ def get_eia_prices_for_states(state_abbrevs):
     Given a list of state abbreviations, fetch the latest gas prices per state.
     Returns dict: {state_abbrev: {regular: price, midgrade: price, premium: price, diesel: price}}
     """
+    if not has_valid_eia_key():
+        return {}
+
     # Map state abbreviations to EIA duoarea codes
     duoarea_codes = []
     state_map = {}  # duoarea_code -> state_abbrev
@@ -290,7 +295,7 @@ def get_eia_prices_for_states(state_abbrevs):
             state_map[code] = st
 
     if not duoarea_codes:
-        # Fallback to national average
+        # Fallback to national average if no valid state list.
         duoarea_codes = ['NUS']
         state_map['NUS'] = 'US'
 
@@ -362,17 +367,27 @@ FALLBACK_PRICES = {
 @app.route('/api/fuel_price', methods=['GET'])
 def fuel_price():
     """Get all fuel prices (tries EIA national, then legacy, then fallback)."""
-    # Try EIA national average first
-    eia_data = get_eia_prices_for_states([])
-    if eia_data and 'US' in eia_data:
-        fuels = {k: v for k, v in eia_data['US'].items() if k in ('regular', 'midgrade', 'premium', 'diesel')}
-        if fuels:
-            return jsonify({'price_per_gallon': fuels, 'source': 'eia'})
-    # Legacy fallback
+    if has_valid_eia_key():
+        eia_data = get_eia_prices_for_states([])
+        if eia_data and 'US' in eia_data:
+            fuels = {k: v for k, v in eia_data['US'].items() if k in ('regular', 'midgrade', 'premium', 'diesel')}
+            if fuels:
+                return jsonify({'price_per_gallon': fuels, 'source': 'eia', 'eia_enabled': True})
+
     fuels = get_fuel_prices_legacy()
     if fuels:
-        return jsonify({'price_per_gallon': fuels, 'source': 'fueleconomy.gov'})
-    return jsonify({'price_per_gallon': FALLBACK_PRICES, 'source': 'fallback'})
+        return jsonify({
+            'price_per_gallon': fuels,
+            'source': 'fueleconomy.gov',
+            'eia_enabled': has_valid_eia_key()
+        })
+
+    return jsonify({
+        'price_per_gallon': FALLBACK_PRICES,
+        'source': 'fallback',
+        'eia_enabled': has_valid_eia_key(),
+        'message': 'EIA state pricing disabled or unavailable, using fallback prices.'
+    })
 
 
 @app.route('/api/gas-prices', methods=['POST'])
@@ -393,7 +408,8 @@ def gas_prices_by_route():
     unique_states = [s for s in set(states) if s]
     prices_by_state = get_eia_prices_for_states(unique_states)
 
-    # If EIA failed, try legacy
+    # If EIA is unavailable, fallback to legacy prices for all states
+    source = 'eia' if prices_by_state and has_valid_eia_key() else 'fallback'
     if not prices_by_state:
         legacy = get_fuel_prices_legacy() or FALLBACK_PRICES
         prices_by_state = {'US': {**legacy, 'state': 'US', 'area_name': 'National Average'}}
@@ -401,7 +417,8 @@ def gas_prices_by_route():
     return jsonify({
         'states': states,
         'prices_by_state': prices_by_state,
-        'source': 'eia' if unique_states else 'fallback'
+        'source': source,
+        'eia_enabled': has_valid_eia_key()
     })
 
 
@@ -676,6 +693,8 @@ def optimize():
     mpg = data.get('mpg')
     fuel_price_data = data.get('fuel_price')  # dict of fuel type to price
     fuel_type = data.get('fuel_type', 'regular')  # default to regular
+    if fuel_type == 'mid':
+        fuel_type = 'midgrade'
     route_options = build_route_options(data.get('route_type'), data.get('avoid'))
     if not cities or not coords or not car_type or mpg is None or not fuel_price_data:
         return jsonify({'error': 'Missing required parameters'}), 400
