@@ -1113,6 +1113,50 @@ header:hover h1::after {
     display: block;
 }
 
+/* Weather Cards */
+.weather-card {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: var(--border-radius-sm);
+    padding: 0.9rem;
+    height: 100%;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.weather-city {
+    font-size: 1rem;
+    margin-bottom: 0.5rem;
+}
+
+.weather-day {
+    flex: 1 1 120px;
+    min-width: 120px;
+    background: rgba(0, 0, 0, 0.15);
+    border-radius: 8px;
+    padding: 0.6rem;
+    text-align: center;
+}
+
+.weather-icon {
+    font-size: 0.95rem;
+    color: var(--text-secondary);
+    margin: 0.25rem 0;
+}
+
+.weather-temp {
+    font-size: 1rem;
+    font-weight: 600;
+}
+
+/* Comparison View */
+.comparison-view .table {
+    color: var(--text-primary);
+}
+
+.comparison-view .table td {
+    vertical-align: middle;
+    padding: 0.75rem;
+}
+
 /* Print Styles */
 @media print {
     body {

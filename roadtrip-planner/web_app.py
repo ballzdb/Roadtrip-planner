@@ -34,14 +34,18 @@ def has_valid_eia_key():
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 
 # Overpass (OpenStreetMap) — points of interest along the route
-OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+OVERPASS_URLS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://lz4.overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter"
+]
 OVERPASS_USER_AGENT = "roadtrip-planner/1.0"
 LODGING_TOURISM_TAGS = {'hotel', 'motel', 'hostel', 'guest_house'}
-POI_SAMPLE_POINTS = 3
-POI_MAX_PER_CATEGORY = 25
+POI_SAMPLE_POINTS = 1
+POI_MAX_PER_CATEGORY = 12
 # Overpass throttles hard (429/504) and each extra element costs latency,
 # so cap what a single query returns.
-POI_QUERY_LIMIT = 60
+POI_QUERY_LIMIT = 12
 
 # EIA duoarea codes for US states
 # Maps state abbreviation (uppercase) -> EIA duoarea code
@@ -842,7 +846,8 @@ def optimize():
         'legs': legs,
         'warnings': warnings,
         'overnight_recommendations': overnight_recommendations,
-        'map_filename': map_filename
+        'map_filename': map_filename,
+        'route_geometry': full_geometry
     })
 
 @app.route('/map/<filename>')
@@ -857,29 +862,35 @@ def serve_map(filename):
     return send_from_directory(MAPS_DIR, filename)
 
 # --- Points of Interest (Overpass API) ---
-def overpass_query(query, attempts=3):
+def overpass_query(query, attempts=1):
     """
     Run an Overpass QL query, returning the response or None.
     Overpass answers 406 without a User-Agent and expects the query in the
-    `data` form field; it also returns 429/504 when busy, so retry briefly.
+    `data` form field; it also returns 429/504 when busy, so retry with backoff.
     """
-    for attempt in range(attempts):
-        try:
-            resp = requests.post(
-                OVERPASS_URL,
-                data={'data': query},
-                headers={'User-Agent': OVERPASS_USER_AGENT},
-                timeout=45
-            )
-            if resp.status_code == 200:
-                return resp
-            print(f"Overpass returned HTTP {resp.status_code}")
-            if resp.status_code not in (429, 502, 503, 504):
-                return None
-        except requests.RequestException as e:
-            print(f"Overpass request error: {e}")
-        if attempt < attempts - 1:
-            time.sleep(5 * (attempt + 1))
+    for base_url in OVERPASS_URLS:
+        for attempt in range(attempts):
+            try:
+                resp = requests.post(
+                    base_url,
+                    data={'data': query},
+                    headers={'User-Agent': OVERPASS_USER_AGENT},
+                    timeout=12
+                )
+                if resp.status_code == 200:
+                    return resp
+                print(f"Overpass returned HTTP {resp.status_code} from {base_url}")
+                if resp.status_code not in (429, 502, 503, 504):
+                    break
+            except requests.RequestException as e:
+                print(f"Overpass request error from {base_url}: {e}")
+                if isinstance(e, (requests.ConnectTimeout, requests.ConnectionError)):
+                    break
+            if attempt < attempts - 1:
+                backoff = 2 ** attempt
+                print(f"Retrying Overpass {base_url} in {backoff}s...")
+                time.sleep(backoff)
+        print(f"Trying next Overpass endpoint after failing {base_url}")
     return None
 
 
@@ -891,21 +902,52 @@ def get_pois_along_route(coords, radius_miles=5):
     """
     if not coords:
         return {'gas_station': [], 'restaurant': [], 'lodging': []}
-    # Sample points to avoid too many requests (every nth point)
-    step = max(1, len(coords) // POI_SAMPLE_POINTS)
-    sampled = coords[::step][:POI_SAMPLE_POINTS]
+    # Sample points to avoid too many requests, while covering the route.
+    if POI_SAMPLE_POINTS <= 1 or len(coords) <= POI_SAMPLE_POINTS:
+        sampled = [coords[len(coords) // 2]]
+    else:
+        span = len(coords) - 1
+        step = span / (POI_SAMPLE_POINTS - 1)
+        sampled = []
+        for i in range(POI_SAMPLE_POINTS):
+            index = int(round(i * step))
+            sampled.append(coords[min(index, len(coords) - 1)])
     pois = {'gas_station': [], 'restaurant': [], 'lodging': []}
+
+    def parse_element(element):
+        tags = element.get('tags', {})
+        name = tags.get('name') or 'Unnamed'
+        lat_value = element.get('lat') or element.get('center', {}).get('lat')
+        lon_value = element.get('lon') or element.get('center', {}).get('lon')
+        if lat_value is None or lon_value is None:
+            return None
+        street = ' '.join(p for p in (tags.get('addr:housenumber'), tags.get('addr:street')) if p)
+        addr_parts = [p for p in (street, tags.get('addr:city'), tags.get('addr:state')) if p]
+        address = ', '.join(addr_parts)
+        return {
+            'name': name,
+            'address': address,
+            'lat': lat_value,
+            'lon': lon_value,
+            'tags': tags
+        }
+
     for lon, lat in sampled:
-        # Convert radius miles to meters
         radius_meters = int(radius_miles * 1609.34)
-        # Build Overpass QL query. Lodging lives under the tourism key,
-        # not amenity.
         query = f"""
-        [out:json][timeout:25];
+        [out:json][timeout:20];
         (
           node["amenity"="fuel"](around:{radius_meters},{lat},{lon});
+          way["amenity"="fuel"](around:{radius_meters},{lat},{lon});
+          relation["amenity"="fuel"](around:{radius_meters},{lat},{lon});
+
           node["amenity"="restaurant"](around:{radius_meters},{lat},{lon});
+          way["amenity"="restaurant"](around:{radius_meters},{lat},{lon});
+          relation["amenity"="restaurant"](around:{radius_meters},{lat},{lon});
+
           node["tourism"~"^(hotel|motel|hostel|guest_house)$"](around:{radius_meters},{lat},{lon});
+          way["tourism"~"^(hotel|motel|hostel|guest_house)$"](around:{radius_meters},{lat},{lon});
+          relation["tourism"~"^(hotel|motel|hostel|guest_house)$"](around:{radius_meters},{lat},{lon});
         );
         out center {POI_QUERY_LIMIT};
         """
@@ -915,18 +957,10 @@ def get_pois_along_route(coords, radius_miles=5):
                 continue
             data = resp.json()
             for element in data.get('elements', []):
-                tags = element.get('tags', {})
-                name = tags.get('name') or 'Unnamed'
-                # Address approximation
-                street = ' '.join(p for p in (tags.get('addr:housenumber'), tags.get('addr:street')) if p)
-                addr_parts = [p for p in (street, tags.get('addr:city')) if p]
-                address = ', '.join(addr_parts)
-                poi = {
-                    'name': name,
-                    'address': address,
-                    'lat': element.get('lat'),
-                    'lon': element.get('lon')
-                }
+                poi = parse_element(element)
+                if poi is None:
+                    continue
+                tags = poi['tags']
                 amenity = tags.get('amenity')
                 if amenity == 'fuel':
                     pois['gas_station'].append(poi)
@@ -937,7 +971,8 @@ def get_pois_along_route(coords, radius_miles=5):
         except Exception as e:
             print(f"POI request error: {e}")
             continue
-    # Deduplicate by name+location (simple)
+
+    # Deduplicate by name+location and sort named places first.
     for key in pois:
         seen = set()
         unique = []
@@ -946,7 +981,6 @@ def get_pois_along_route(coords, radius_miles=5):
             if identifier not in seen:
                 seen.add(identifier)
                 unique.append(p)
-        # Named places first, so the list isn't a wall of "Unnamed".
         unique.sort(key=lambda p: p['name'] == 'Unnamed')
         pois[key] = unique[:POI_MAX_PER_CATEGORY]
     return pois
@@ -959,7 +993,7 @@ def get_lodging_near(coord, radius_miles=12, max_results=6):
     lon, lat = coord
     radius_meters = int(radius_miles * 1609.34)
     query = f"""
-        [out:json][timeout:25];
+        [out:json][timeout:20];
         (
           node["tourism"~"^(hotel|motel|hostel|guest_house)$"](around:{radius_meters},{lat},{lon});
           way["tourism"~"^(hotel|motel|hostel|guest_house)$"](around:{radius_meters},{lat},{lon});
@@ -1007,16 +1041,33 @@ def get_lodging_near(coord, radius_miles=12, max_results=6):
 
 
 # --- Flask routes for POI ---
+@app.route('/api/weather', methods=['POST'])
+def weather():
+    data = request.get_json(silent=True) or {}
+    coords = data.get('coords')  # list of [lon, lat]
+    if not isinstance(coords, list) or not coords:
+        return jsonify({'weather': []})
+
+    weather_data = get_weather_for_coords(coords)
+    return jsonify({'weather': weather_data})
+
+
 @app.route('/api/pois', methods=['POST'])
 def pois():
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     coords = data.get('coords')  # list of [lon, lat]
     radius_miles = data.get('radius_miles', 5)
-    if not coords:
-        return jsonify({'error': 'Coordinates required'}), 400
-    pois = get_pois_along_route(coords, radius_miles)
+    if not isinstance(coords, list) or not coords:
+        return jsonify({'poi': {'gas_station': [], 'restaurant': [], 'lodging': []}})
+
+    try:
+        pois = get_pois_along_route(coords, radius_miles)
+    except Exception as exc:
+        print(f'POI route error: {exc}')
+        pois = {'gas_station': [], 'restaurant': [], 'lodging': []}
+
     return jsonify({'poi': pois})
 
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    app.run(debug=False, use_reloader=False, port=5000)

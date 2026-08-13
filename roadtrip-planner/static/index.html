@@ -117,6 +117,24 @@ Washington DC" required></textarea>
                                         </select>
                                     </div>
 
+                                    <div class="mb-3">
+                                        <label class="form-label">Avoid</label>
+                                        <div class="d-flex flex-wrap gap-3">
+                                            <div class="form-check form-switch">
+                                                <input class="form-check-input" type="checkbox" id="avoid-tolls">
+                                                <label class="form-check-label" for="avoid-tolls">Tolls</label>
+                                            </div>
+                                            <div class="form-check form-switch">
+                                                <input class="form-check-input" type="checkbox" id="avoid-highways">
+                                                <label class="form-check-label" for="avoid-highways">Highways</label>
+                                            </div>
+                                            <div class="form-check form-switch">
+                                                <input class="form-check-input" type="checkbox" id="avoid-ferries">
+                                                <label class="form-check-label" for="avoid-ferries">Ferries</label>
+                                            </div>
+                                        </div>
+                                    </div>
+
                                     <div class="form-check form-switch mb-3">
                                         <input class="form-check-input" type="checkbox" id="poi-toggle">
                                         <label class="form-check-label" for="poi-toggle">Show Points of Interest</label>
@@ -191,6 +209,11 @@ Washington DC" required></textarea>
                                 <div id="overnight-recommendations" class="mb-3 d-none">
                                     <h4 class="h6"><i class="bi bi-bed-fill me-2"></i>Recommended overnight stops</h4>
                                     <div class="row g-3" id="overnight-recommendations-list"></div>
+                                </div>
+
+                                <div id="weather-section" class="mb-3 d-none">
+                                    <h4 class="h6"><i class="bi bi-cloud-sun-fill me-2"></i>Weather at Stops</h4>
+                                    <div class="row g-3" id="weather-list"></div>
                                 </div>
 
                                 <div id="pois-section" class="mb-3 d-none">

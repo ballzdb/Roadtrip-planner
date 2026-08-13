@@ -20,6 +20,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const resultsSection = document.getElementById('trip-results-section');
     const mapContainer = document.getElementById('map-container');
     const poiSection = document.getElementById('pois-section');
+    const weatherSection = document.getElementById('weather-section');
+    const weatherList = document.getElementById('weather-list');
+    const avoidTolls = document.getElementById('avoid-tolls');
+    const avoidHighways = document.getElementById('avoid-highways');
+    const avoidFerries = document.getElementById('avoid-ferries');
 
     // Initialize theme from localStorage or system preference
     const savedTheme = localStorage.getItem('theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
@@ -93,11 +98,23 @@ document.addEventListener('DOMContentLoaded', () => {
         form.dispatchEvent(new Event('submit'));
     }
 
+    // Return the current avoid settings from the checkboxes
+    function getAvoidSettings() {
+        return {
+            tolls: avoidTolls.checked,
+            highways: avoidHighways.checked,
+            ferries: avoidFerries.checked
+        };
+    }
+
     // Restore the Route Options controls from saved/shared trip data
     function applyRouteOptions(routeType, avoid) {
         if (routeType) {
             document.getElementById('route-type').value = routeType;
         }
+        avoidTolls.checked = !!(avoid && avoid.tolls);
+        avoidHighways.checked = !!(avoid && avoid.highways);
+        avoidFerries.checked = !!(avoid && avoid.ferries);
     }
 
     // Generate shareable URL from current trip data
@@ -129,6 +146,8 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('fuel-type').value = fuelParam === 'mid' ? 'midgrade' : fuelParam;
             const avoidParam = (params.get('avoid') || '').split('|').filter(Boolean);
             applyRouteOptions(params.get('route'), {
+                tolls: avoidParam.includes('tolls'),
+                highways: avoidParam.includes('highways'),
                 ferries: avoidParam.includes('ferries')
             });
             // Auto-submit after a short delay to let UI settle
@@ -157,17 +176,19 @@ document.addEventListener('DOMContentLoaded', () => {
   </wpt>`;
         });
 
-        // Track (ordered route)
+        // Track (ordered route) using real road geometry if available
         gpx += `
   <trk>
     <name>Route</name>
     <trkseg>`;
-        // We don't have detailed geometry in tripData; we'll approximate with ordered_coords
-        // For better accuracy, we would need to store the full geometry from backend.
-        // We'll just use the city coordinates as track points (straight lines).
-        tripData.ordered_coords.forEach(coord => {
+        // Use the actual road geometry from the backend if we have it;
+        // otherwise fall back to straight lines between city coords.
+        const gpxPoints = (tripData.route_geometry && tripData.route_geometry.length > 0)
+            ? tripData.route_geometry.map(pt => ({ lat: pt[1], lon: pt[0] }))
+            : tripData.ordered_coords.map(coord => ({ lat: coord[1], lon: coord[0] }));
+        gpxPoints.forEach(pt => {
             gpx += `
-    <trkpt lat="${coord[1]}" lon="${coord[0]}">
+    <trkpt lat="${pt.lat}" lon="${pt.lon}">
       <ele>0</ele>
     </trkpt>`;
         });
@@ -208,6 +229,8 @@ document.addEventListener('DOMContentLoaded', () => {
         tripActions.classList.add('d-none');
         shareSection.classList.add('d-none');
         resultsSection.classList.add('d-none');
+        poiSection.classList.add('d-none');
+        weatherSection.classList.add('d-none');
         tripMap.srcdoc = '<p>Loading map...</p>';
         mapContainer.classList.add('loading');
 
@@ -217,7 +240,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const fuelType = rawFuelType === 'mid' ? 'midgrade' : rawFuelType;
         const routeType = document.getElementById('route-type').value;
         const poiEnabled = document.getElementById('poi-toggle').checked;
-        const avoidSettings = {};
+        const avoidSettings = getAvoidSettings();
 
         if (!citiesText) {
             alert('Please enter at least two cities.');
@@ -312,12 +335,31 @@ document.addEventListener('DOMContentLoaded', () => {
                 method: optimizeData.method,
                 mpg: optimizeData.mpg,
                 warnings: optimizeData.warnings || [],
-                legs: optimizeData.legs || []
+                legs: optimizeData.legs || [],
+                route_geometry: optimizeData.route_geometry || [],
+                road_overhead_percent: optimizeData.road_overhead_percent,
+                straight_line_km: optimizeData.straight_line_km
             };
+
+            // Fetch weather for each stop
+            fetch('/api/weather', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ coords: optimizeData.ordered_coords })
+            })
+                .then(res => res.json())
+                .then(weatherData => {
+                    displayWeather(weatherData.weather, optimizeData.ordered_cities);
+                })
+                .catch(err => {
+                    console.error('Weather fetch error:', err);
+                });
 
             // Fetch POIs if enabled
             if (poiEnabled) {
-                // POIs
+                const poisList = document.getElementById('pois-list');
+                poiSection.classList.remove('d-none');
+                poisList.innerHTML = '<div class="col-12 text-muted">Loading points of interest...</div>';
                 fetch('/api/pois', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -326,13 +368,20 @@ document.addEventListener('DOMContentLoaded', () => {
                         radius_miles: 5
                     })
                 })
-                    .then(res => res.json())
+                    .then(res => {
+                        if (!res.ok) {
+                            throw new Error(`POI request failed with status ${res.status}`);
+                        }
+                        return res.json();
+                    })
                     .then(poisData => {
                         displayPOIs(poisData.poi);
                         poiSection.classList.remove('d-none');
                     })
                     .catch(err => {
                         console.error('POI fetch error:', err);
+                        displayPOIs({ gas_station: [], restaurant: [], lodging: [] });
+                        poiSection.classList.remove('d-none');
                     });
             } else {
                 poiSection.classList.add('d-none');
@@ -342,11 +391,17 @@ document.addEventListener('DOMContentLoaded', () => {
             // Show results section
             resultsSection.classList.remove('d-none');
 
+            // Trip duration in days (assume ~8h driving per day)
+            const totalDays = Math.max(1, Math.ceil(optimizeData.total_duration_h / 8));
+            const overnightCount = totalDays - 1;
+
             // Display results
+            const comparisonHtml = buildComparisonHtml(cities, optimizeData);
             tripInfo.innerHTML = `
                 <div><strong>Optimized Route:</strong> ${optimizeData.ordered_cities.join(' → ')}</div>
                 <div><strong>Total Distance:</strong> ${optimizeData.total_distance_km.toFixed(2)} km</div>
                 <div><strong>Estimated Time:</strong> ${optimizeData.total_duration_h.toFixed(2)} hours</div>
+                <div><strong>Trip Length:</strong> ~${totalDays} day${totalDays > 1 ? 's' : ''}${overnightCount > 0 ? `, ${overnightCount} night${overnightCount > 1 ? 's' : ''}` : ''}</div>
                 <div><strong>Fuel Cost:</strong> $${optimizeData.estimated_fuel_cost.toFixed(2)}</div>
                 <div><strong>Fuel Price Source:</strong> ${optimizeData.fuel_price_source || 'unknown'}${optimizeData.fuel_price_source_live ? ' (live)' : ''}</div>
                 <div><strong>State-level pricing:</strong> ${optimizeData.eia_enabled ? 'enabled' : 'disabled'}</div>
@@ -366,6 +421,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 <div><strong>Road vs Straight Distance:</strong> ${optimizeData.road_overhead_percent.toFixed(1)}% longer</div>
                 <div><strong>Fuel Used:</strong> ${optimizeData.total_gallons.toFixed(1)} gal</div>
                 <div><strong>CO₂ Emissions:</strong> ${optimizeData.co2_kg.toFixed(1)} kg</div>
+                ${comparisonHtml}
                 ${legsTable(optimizeData.legs)}
             `;
             tripInfo.classList.remove('d-none');
@@ -493,6 +549,112 @@ document.addEventListener('DOMContentLoaded', () => {
         const tripData = { ...window.currentTripData, name };
         exportAsJson(tripData);
     });
+
+    // Build the "your order vs optimized order" comparison view
+    function buildComparisonHtml(originalCities, optimizeData) {
+        if (originalCities.length < 3) return '';  // no meaningful comparison for 2 cities
+        const optimized = optimizeData.ordered_cities;
+        const sameOrder = originalCities.every((c, i) => c.toLowerCase() === optimized[i].toLowerCase());
+        if (sameOrder) return '<div class="mt-3"><strong>Route optimization:</strong> Your input order was already optimal!</div>';
+
+        const typedRoute = originalCities.join(' → ');
+        const optimizedRoute = optimized.join(' → ');
+        return `
+            <div class="mt-3 comparison-view">
+                <div><strong>Route Comparison:</strong></div>
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle">
+                        <thead>
+                            <tr><th>Your order</th><th>Optimized order</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td class="text-muted">${typedRoute}</td>
+                                <td class="text-success">${optimizedRoute}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <small class="text-muted">Optimization saved ${(optimizeData.road_overhead_percent || 0).toFixed(1)}% vs straight-line, and reordered your stops to minimize total driving distance.</small>
+                </div>
+            </div>
+        `;
+    }
+
+    // Weather code -> emoji + label
+    function weatherLabel(code) {
+        const map = {
+            0: ['☀️', 'Clear'],
+            1: ['🌤️', 'Mostly clear'],
+            2: ['⛅', 'Partly cloudy'],
+            3: ['☁️', 'Overcast'],
+            45: ['🌫️', 'Fog'],
+            48: ['🌫️', 'Rime fog'],
+            51: ['🌦️', 'Light drizzle'],
+            53: ['🌦️', 'Drizzle'],
+            55: ['🌧️', 'Heavy drizzle'],
+            61: ['🌧️', 'Light rain'],
+            63: ['🌧️', 'Rain'],
+            65: ['🌧️', 'Heavy rain'],
+            71: ['🌨️', 'Light snow'],
+            73: ['🌨️', 'Snow'],
+            75: ['❄️', 'Heavy snow'],
+            80: ['🌦️', 'Light showers'],
+            81: ['🌧️', 'Showers'],
+            82: ['⛈️', 'Heavy showers'],
+            95: ['⛈️', 'Thunderstorm'],
+            96: ['⛈️', 'Thunderstorm with hail'],
+            99: ['⛈️', 'Thunderstorm with hail']
+        };
+        return map[code] || ['🌡️', 'Unknown'];
+    }
+
+    // Display weather forecast cards next to city names
+    function displayWeather(weatherData, cityNames) {
+        weatherList.innerHTML = '';
+        if (!weatherData || weatherData.length === 0) {
+            weatherSection.classList.add('d-none');
+            return;
+        }
+
+        const hasAnyData = weatherData.some(w => w.days && w.days.length > 0);
+        if (!hasAnyData) {
+            weatherSection.classList.add('d-none');
+            return;
+        }
+
+        weatherData.forEach((w, idx) => {
+            const cityName = cityNames[idx] || `Stop ${idx + 1}`;
+            if (!w.days || w.days.length === 0) return;
+
+            const dayCards = w.days.map(day => {
+                const [emoji, label] = weatherLabel(day.weather_code);
+                return `
+                    <div class="weather-day">
+                        <small class="text-muted">${day.date}</small>
+                        <div class="weather-icon">${emoji} ${label}</div>
+                        <div class="weather-temp">
+                            <span class="text-danger">${day.high_f !== null && day.high_f !== undefined ? Math.round(day.high_f) + '°F' : '—'}</span>
+                            /
+                            <span class="text-info">${day.low_f !== null && day.low_f !== undefined ? Math.round(day.low_f) + '°F' : '—'}</span>
+                        </div>
+                        ${day.precip_in ? `<small class="text-muted">💧 ${day.precip_in.toFixed(2)} in</small>` : ''}
+                    </div>
+                `;
+            }).join('');
+
+            const col = document.createElement('div');
+            col.className = 'col-md-6 col-lg-4';
+            col.innerHTML = `
+                <div class="weather-card">
+                    <div class="weather-city"><strong>${cityName}</strong></div>
+                    <div class="d-flex flex-wrap gap-2 mt-2">${dayCards}</div>
+                </div>
+            `;
+            weatherList.appendChild(col);
+        });
+
+        weatherSection.classList.remove('d-none');
+    }
 
     // Per-leg breakdown table
     function legsTable(legs) {
