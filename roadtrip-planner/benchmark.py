@@ -13,7 +13,7 @@ script would otherwise hang for a very long time.
 
 import time
 import random
-from main import brute_force_tsp, held_karp_tsp, nearest_neighbor_tsp
+from roadtrip_core import brute_force_tsp, held_karp_tsp, nearest_neighbor_tsp
 
 
 def random_coords(n, seed=42):

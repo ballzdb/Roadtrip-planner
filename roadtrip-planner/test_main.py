@@ -9,7 +9,7 @@ network calls, so they run instantly and don't need an API key.
 """
 
 import unittest
-from main import haversine, estimate_fuel_cost, brute_force_tsp, held_karp_tsp
+from roadtrip_core import haversine, estimate_fuel_cost, brute_force_tsp, held_karp_tsp
 from web_app import build_route_options
 
 

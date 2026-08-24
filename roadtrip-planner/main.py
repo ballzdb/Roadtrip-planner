@@ -1,62 +1,39 @@
-import math
+"""
+cs50-roadtrip-planner — CLI entry point.
+
+Type in two or more cities, pick a car type, and the program estimates
+distance, duration, and gas cost. With 3+ cities it optimizes the visit
+order (Travelling Salesman Problem) using brute force / Held-Karp /
+nearest neighbor from the shared roadtrip_core module.
+"""
+
 import os
+import time
 import requests
 import xml.etree.ElementTree as ET
-import time
 from itertools import permutations, combinations
-from dotenv import load_dotenv
-import folium
+
 try:
     import webview
 except ImportError:
     webview = None
 
-load_dotenv()
+from roadtrip_core import (
+    haversine,
+    get_ors_api_key,
+    estimate_fuel_cost,
+    brute_force_tsp,
+    held_karp_tsp,
+    nearest_neighbor_tsp,
+    generate_map,
+    CAR_TYPES,
+)
 
 # --- Config ---
-EARTH_RADIUS_KM = 6371
-ORS_API_KEY = os.getenv("ORS_API_KEY")
 GEOCODE_URL = "https://api.openrouteservice.org/geocode/search"
 ROUTE_URL = "https://api.openrouteservice.org/v2/directions/driving-car/geojson"
 FUEL_URL = "https://www.fueleconomy.gov/ws/rest/fuelprices"
 
-CAR_TYPES = {
-    "economy": 35,
-    "sedan": 30,
-    "suv": 22,
-    "truck": 15,
-    "sports": 18
-}
-
-
-# --- Haversine ---
-def haversine(coord1, coord2):
-    """Straight-line distance between two [lon, lat] points along Earth's surface."""
-    lon1, lat1 = coord1
-    lon2, lat2 = coord2
-    lat1, lat2 = math.radians(lat1), math.radians(lat2)
-    lon1, lon2 = math.radians(lon1), math.radians(lon2)
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    a = math.sin(dlat / 2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2)**2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    return EARTH_RADIUS_KM * c
-
-
-def get_ors_api_key():
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    local_env = os.path.join(base_dir, ".env")
-    parent_env = os.path.join(base_dir, "..", ".env")
-
-    if os.path.exists(local_env):
-        load_dotenv(local_env, override=True)
-    if os.path.exists(parent_env):
-        load_dotenv(parent_env, override=True)
-
-    key = os.getenv("ORS_API_KEY")
-    if not key or not key.strip() or key.strip() == "your_openrouteservice_api_key_here":
-        return None
-    return key.strip()
 
 # --- Geocoding ---
 def get_coordinates(city_name):
@@ -139,186 +116,24 @@ def get_fuel_prices():
         print(f"  Could not fetch live fuel prices: {e}")
         return None
 
+
 def get_fuel_price(fuel_type='regular'):
     """Get price for a specific fuel type, with fallback."""
+    from roadtrip_core import FALLBACK_PRICES
+
     fuels = get_fuel_prices()
     if fuels and fuel_type in fuels:
         return fuels[fuel_type]
 
-    # Fallback prices if API fails
-    fallback_prices = {
-        'regular': 3.50,
-        'midgrade': 3.70,
-        'premium': 3.90,
-        'diesel': 4.20,
-        'cng': 2.50,
-        'e85': 2.80,
-        'electric': 0.12,
-        'lpg': 3.00
-    }
-
-    if fuel_type in fallback_prices:
-        print(f"  Using fallback price for {fuel_type}: ${fallback_prices[fuel_type]:.2f}/gal")
-        return fallback_prices[fuel_type]
+    if fuel_type in FALLBACK_PRICES:
+        print(f"  Using fallback price for {fuel_type}: ${FALLBACK_PRICES[fuel_type]:.2f}/gal")
+        return FALLBACK_PRICES[fuel_type]
     else:
         print(f"  Unknown fuel type '{fuel_type}', using regular fallback: $3.50/gal")
         return 3.50
 
 
-# --- Fuel cost ---
-def estimate_fuel_cost(distance_km, mpg, price_per_gallon):
-    miles = distance_km * 0.621371
-    gallons = miles / mpg
-    return round(gallons * price_per_gallon, 2)
-
-
-# --- TSP: Brute Force O(n!) ---
-def brute_force_tsp(coords):
-    """
-    Tries every possible ordering of cities and returns the shortest.
-    Guaranteed optimal, but only feasible for n <= 8 cities.
-    Time complexity: O(n!)
-    """
-    n = len(coords)
-    others = list(range(1, n))
-    best_order = None
-    best_dist = float("inf")
-
-    for perm in permutations(others):
-        order = [0] + list(perm)
-        dist = sum(haversine(coords[order[i]], coords[order[i + 1]]) for i in range(len(order) - 1))
-        if dist < best_dist:
-            best_dist = dist
-            best_order = order
-
-    return best_order, best_dist
-
-
-# --- TSP: Held-Karp Dynamic Programming O(2^n * n^2) ---
-def held_karp_tsp(coords):
-    """
-    Guaranteed-optimal TSP solver using dynamic programming with a bitmask
-    to track which cities have been visited. Same correct answer as brute
-    force, but avoids recomputing overlapping sub-routes, which is why it's
-    dramatically faster: O(2^n * n^2) instead of O(n!).
-
-    For example, at n=12: brute force is ~479 million operations,
-    Held-Karp is roughly 590,000. Still exponential, so it also breaks
-    down eventually (usable up to roughly 15-18 cities), but it pushes
-    the "guaranteed optimal" ceiling much higher than brute force alone.
-    """
-    n = len(coords)
-    dist = [[haversine(coords[i], coords[j]) for j in range(n)] for i in range(n)]
-
-    # C[(visited_bitmask, last_city)] = (min_cost_so_far, path_so_far)
-    # Every route starts at city 0.
-    C = {}
-    for k in range(1, n):
-        C[(1 << k, k)] = (dist[0][k], [0, k])
-
-    for subset_size in range(2, n):
-        for subset in combinations(range(1, n), subset_size):
-            bits = 0
-            for bit in subset:
-                bits |= 1 << bit
-
-            for k in subset:
-                prev_bits = bits & ~(1 << k)
-                candidates = []
-                for m in subset:
-                    if m == k:
-                        continue
-                    if (prev_bits, m) in C:
-                        cost, path = C[(prev_bits, m)]
-                        candidates.append((cost + dist[m][k], path + [k]))
-                if candidates:
-                    C[(bits, k)] = min(candidates, key=lambda x: x[0])
-
-    # Close the loop back to city 0 is NOT needed here since a road trip
-    # doesn't need to return to the start — we just want the shortest path
-    # that visits every city once.
-    full_bits = (1 << n) - 2  # all cities except city 0
-    best = None
-    for k in range(1, n):
-        if (full_bits, k) in C:
-            cost, path = C[(full_bits, k)]
-            if best is None or cost < best[0]:
-                best = (cost, path)
-
-    return best[1], best[0]
-
-
-# --- TSP: Nearest Neighbor Heuristic O(n^2) ---
-def nearest_neighbor_tsp(coords):
-    """
-    Greedy heuristic: always move to the closest unvisited city.
-    Not guaranteed optimal, but fast for any number of cities.
-    Time complexity: O(n^2)
-    """
-    n = len(coords)
-    visited = [False] * n
-    order = [0]
-    visited[0] = True
-
-    for _ in range(n - 1):
-        current = order[-1]
-        nearest, nearest_dist = None, float("inf")
-        for j in range(n):
-            if not visited[j]:
-                d = haversine(coords[current], coords[j])
-                if d < nearest_dist:
-                    nearest_dist = d
-                    nearest = j
-        order.append(nearest)
-        visited[nearest] = True
-
-    total = sum(haversine(coords[order[i]], coords[order[i + 1]]) for i in range(len(order) - 1))
-    return order, total
-
-
 # --- Map generation ---
-def generate_map(cities, coords, route_geometry=None, filename="trip_map.html"):
-    """
-    Builds an interactive HTML map showing each city as a pin.
-    If route_geometry is provided (the actual road-shaped path from the
-    routing API), that gets drawn instead of a straight line between cities.
-    coords are expected in [lon, lat] order (how ORS returns them);
-    folium expects [lat, lon], so they get flipped here.
-    """
-    latlon_coords = [[lat, lon] for lon, lat in coords]
-
-    center_lat = sum(c[0] for c in latlon_coords) / len(latlon_coords)
-    center_lon = sum(c[1] for c in latlon_coords) / len(latlon_coords)
-
-    m = folium.Map(location=[center_lat, center_lon], zoom_start=6, tiles="OpenStreetMap")
-
-    for i, (city, latlon) in enumerate(zip(cities, latlon_coords)):
-        if i == 0:
-            color, label = "green", f"Start: {city}"
-        elif i == len(cities) - 1:
-            color, label = "red", f"End: {city}"
-        else:
-            color, label = "blue", f"Stop {i}: {city}"
-
-        folium.Marker(
-            location=latlon,
-            popup=label,
-            tooltip=label,
-            icon=folium.Icon(color=color)
-        ).add_to(m)
-
-    if route_geometry:
-        route_latlon = [[lat, lon] for lon, lat in route_geometry]
-        folium.PolyLine(route_latlon, color="#3388ff", weight=4, opacity=0.8).add_to(m)
-        m.fit_bounds(route_latlon)
-    else:
-        folium.PolyLine(latlon_coords, color="#3388ff", weight=4, opacity=0.8, dash_array="8").add_to(m)
-        m.fit_bounds(latlon_coords)
-
-    m.save(filename)
-    return filename
-
-
 def show_map_window(filename):
     """Opens the generated map in its own native app window instead of a browser tab."""
     abs_path = os.path.abspath(filename)

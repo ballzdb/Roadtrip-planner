@@ -22,9 +22,40 @@ document.addEventListener('DOMContentLoaded', () => {
     const poiSection = document.getElementById('pois-section');
     const weatherSection = document.getElementById('weather-section');
     const weatherList = document.getElementById('weather-list');
+    const itinerarySection = document.getElementById('itinerary-section');
+    const itineraryList = document.getElementById('itinerary-list');
     const avoidTolls = document.getElementById('avoid-tolls');
     const avoidHighways = document.getElementById('avoid-highways');
     const avoidFerries = document.getElementById('avoid-ferries');
+    const printTripBtn = document.getElementById('print-trip-btn');
+    const toastContainer = document.getElementById('toast-container');
+
+    // --- Toast notification helper (replaces browser alert) ---
+    function showToast(message, type = 'info', title = '') {
+        const icons = {
+            info: 'bi-info-circle',
+            success: 'bi-check-circle',
+            warning: 'bi-exclamation-triangle',
+            error: 'bi-x-circle'
+        };
+        const icon = icons[type] || icons.info;
+        const toastEl = document.createElement('div');
+        toastEl.className = `toast align-items-center text-bg-${type === 'info' ? 'dark' : type} border-0`;
+        toastEl.setAttribute('role', 'alert');
+        toastEl.innerHTML = `
+            <div class="d-flex">
+                <div class="toast-body">
+                    ${title ? `<strong>${title}</strong><br>` : ''}
+                    <i class="bi ${icon} me-1"></i>${message}
+                </div>
+                <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+            </div>
+        `;
+        toastContainer.appendChild(toastEl);
+        const toast = new bootstrap.Toast(toastEl, { delay: 4000 });
+        toast.show();
+        toastEl.addEventListener('hidden.bs.toast', () => toastEl.remove());
+    }
 
     // Initialize theme from localStorage or system preference
     const savedTheme = localStorage.getItem('theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
@@ -231,6 +262,7 @@ document.addEventListener('DOMContentLoaded', () => {
         resultsSection.classList.add('d-none');
         poiSection.classList.add('d-none');
         weatherSection.classList.add('d-none');
+        itinerarySection.classList.add('d-none');
         tripMap.srcdoc = '<p>Loading map...</p>';
         mapContainer.classList.add('loading');
 
@@ -243,7 +275,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const avoidSettings = getAvoidSettings();
 
         if (!citiesText) {
-            alert('Please enter at least two cities.');
+            showToast('Please enter at least two cities.', 'warning');
             submitBtn.disabled = false;
             submitBtn.innerHTML = '<i class="bi bi-play-circle me-2"></i>Plan Trip';
             mapContainer.classList.remove('loading');
@@ -256,7 +288,7 @@ document.addEventListener('DOMContentLoaded', () => {
             .filter(line => line.length > 0);
 
         if (cities.length < 2) {
-            alert('Please enter at least two cities.');
+            showToast('Please enter at least two cities.', 'warning');
             submitBtn.disabled = false;
             submitBtn.innerHTML = '<i class="bi bi-play-circle me-2"></i>Plan Trip';
             mapContainer.classList.remove('loading');
@@ -391,8 +423,9 @@ document.addEventListener('DOMContentLoaded', () => {
             // Show results section
             resultsSection.classList.remove('d-none');
 
-            // Trip duration in days (assume ~8h driving per day)
-            const totalDays = Math.max(1, Math.ceil(optimizeData.total_duration_h / 8));
+            // Trip duration in days (use the configurable max hours/day)
+            const maxHoursPerDay = Math.max(1, parseFloat(document.getElementById('max-hours-per-day').value) || 8);
+            const totalDays = Math.max(1, Math.ceil(optimizeData.total_duration_h / maxHoursPerDay));
             const overnightCount = totalDays - 1;
 
             // Display results
@@ -436,6 +469,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // Display overnight recommendations for legs over 10h
             displayOvernightRecommendations(optimizeData.overnight_recommendations || []);
+
+            // Display day-by-day itinerary
+            displayItinerary(optimizeData.legs, optimizeData.total_duration_h);
 
             // Show actions
             tripActions.classList.remove('d-none');
@@ -481,7 +517,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         } catch (error) {
             console.error('Error:', error);
-            alert(`An error occurred: ${error.message}`);
+            showToast(error.message, 'error', 'Planning failed');
         } finally {
             submitBtn.disabled = false;
             submitBtn.innerHTML = '<i class="bi bi-play-circle me-2"></i>Plan Trip';
@@ -492,35 +528,83 @@ document.addEventListener('DOMContentLoaded', () => {
     // Save trip button
     saveTripBtn.addEventListener('click', () => {
         if (!window.currentTripData) {
-            alert('Please plan a trip first.');
+            showToast('Please plan a trip first.', 'warning');
             return;
         }
         const name = prompt('Enter a name for this trip:', 'My Road Trip');
         if (name === null) return;
         const tripData = { ...window.currentTripData, name };
         saveTrip(tripData);
-        alert('Trip saved!');
+        showToast('Trip saved!', 'success');
     });
 
     // Share link button
     shareLinkBtn.addEventListener('click', () => {
         if (!window.currentTripData) {
-            alert('Please plan a trip first.');
+            showToast('Please plan a trip first.', 'warning');
             return;
         }
         const shareUrl = createShareUrl(window.currentTripData);
         navigator.clipboard.writeText(shareUrl).then(() => {
-            alert('Link copied to clipboard!');
+            showToast('Link copied to clipboard!', 'success');
         }).catch(err => {
-            alert('Failed to copy: ' + err);
+            showToast('Failed to copy: ' + err, 'error');
         });
     });
+
+    // Copy link button
+    copyLinkBtn.addEventListener('click', () => {
+        if (!shareLinkInput.value) {
+            showToast('Please plan a trip first.', 'warning');
+            return;
+        }
+        navigator.clipboard.writeText(shareLinkInput.value).then(() => {
+            showToast('Link copied to clipboard!', 'success');
+        }).catch(err => {
+            showToast('Failed to copy: ' + err, 'error');
+        });
+    });
+
+    // Example trip button
+    const exampleBtn = document.getElementById('example-nyc-chi');
+    if (exampleBtn) {
+        exampleBtn.addEventListener('click', () => {
+            document.getElementById('cities').value = 'New York\nChicago';
+            document.getElementById('car-type').value = 'sedan';
+            document.getElementById('fuel-type').value = 'regular';
+            document.getElementById('route-type').value = 'fastest';
+            avoidTolls.checked = false;
+            avoidHighways.checked = false;
+            avoidFerries.checked = false;
+            document.getElementById('poi-toggle').checked = false;
+            form.dispatchEvent(new Event('submit'));
+        });
+    }
+
+    // Reset form button
+    const resetBtn = document.getElementById('reset-form');
+    if (resetBtn) {
+        resetBtn.addEventListener('click', () => {
+            form.reset();
+            if (tripInfo) tripInfo.classList.add('d-none');
+            if (tripWarnings) tripWarnings.classList.add('d-none');
+            if (tripActions) tripActions.classList.add('d-none');
+            if (shareSection) shareSection.classList.add('d-none');
+            if (resultsSection) resultsSection.classList.add('d-none');
+            if (poiSection) poiSection.classList.add('d-none');
+            if (weatherSection) weatherSection.classList.add('d-none');
+            if (itinerarySection) itinerarySection.classList.add('d-none');
+            tripMap.srcdoc = '<p>Loading map...</p>';
+            window.currentTripData = null;
+            showToast('Form reset.', 'info');
+        });
+    }
 
     // Load trip button
     loadTripBtn.addEventListener('click', () => {
         const index = savedTripsSelect.value;
         if (index === '') {
-            alert('Please select a saved trip.');
+            showToast('Please select a saved trip.', 'warning');
             return;
         }
         loadTrip(parseInt(index));
@@ -529,26 +613,72 @@ document.addEventListener('DOMContentLoaded', () => {
     // Export GPX button
     exportGpxBtn.addEventListener('click', () => {
         if (!window.currentTripData) {
-            alert('Please plan a trip first.');
+            showToast('Please plan a trip first.', 'warning');
             return;
         }
         const name = prompt('Enter a name for the GPX file:', 'trip');
         if (name === null) return;
         const tripData = { ...window.currentTripData, name };
         exportAsGpx(tripData);
+        showToast('GPX file downloaded.', 'success');
     });
 
     // Export JSON button
     exportJsonBtn.addEventListener('click', () => {
         if (!window.currentTripData) {
-            alert('Please plan a trip first.');
+            showToast('Please plan a trip first.', 'warning');
             return;
         }
         const name = prompt('Enter a name for the JSON file:', 'trip_data');
         if (name === null) return;
         const tripData = { ...window.currentTripData, name };
         exportAsJson(tripData);
+        showToast('JSON file downloaded.', 'success');
     });
+
+    // Print itinerary button
+    printTripBtn.addEventListener('click', () => {
+        if (!window.currentTripData) {
+            showToast('Please plan a trip first.', 'warning');
+            return;
+        }
+        window.print();
+    });
+
+    // Build the day-by-day itinerary view (use configurable max hours/day)
+    function displayItinerary(legs, totalHours) {
+        if (!legs || legs.length < 2) {
+            itinerarySection.classList.add('d-none');
+            return;
+        }
+        const maxHoursPerDay = Math.max(1, parseFloat(document.getElementById('max-hours-per-day').value) || 8);
+        const days = [];
+        let currentDay = { legs: [], totalHours: 0, totalKm: 0 };
+        days.push(currentDay);
+        legs.forEach(leg => {
+            if (currentDay.totalHours + leg.duration_h > maxHoursPerDay && currentDay.legs.length > 0) {
+                currentDay = { legs: [], totalHours: 0, totalKm: 0 };
+                days.push(currentDay);
+            }
+            currentDay.legs.push(leg);
+            currentDay.totalHours += leg.duration_h;
+            currentDay.totalKm += leg.distance_km;
+        });
+
+        itineraryList.innerHTML = days.map((day, idx) => {
+            const stops = day.legs.map(leg => `${leg.from} → ${leg.to}`).join('<br>');
+            return `
+                <div class="itinerary-day mb-2">
+                    <div class="d-flex align-items-center justify-content-between">
+                        <strong>Day ${idx + 1}</strong>
+                        <span class="text-muted small">${day.totalHours.toFixed(1)} h • ${day.totalKm.toFixed(0)} km</span>
+                    </div>
+                    <div class="itinerary-stops mt-1">${stops}</div>
+                </div>
+            `;
+        }).join('');
+        itinerarySection.classList.remove('d-none');
+    }
 
     // Build the "your order vs optimized order" comparison view
     function buildComparisonHtml(originalCities, optimizeData) {
@@ -686,7 +816,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function displayPOIs(poisData) {
         const poisList = document.getElementById('pois-list');
         poisList.innerHTML = '';
-        const poiTypes = ['gas_station', 'restaurant', 'lodging'];
+        const poiTypes = ['attraction', 'gas_station', 'restaurant', 'lodging'];
         const total = poiTypes.reduce((sum, type) => sum + (poisData[type] || []).length, 0);
         if (total === 0) {
             poisList.innerHTML = '<div class="col-12 text-muted">No points of interest found — OpenStreetMap may be rate limiting, try again in a moment.</div>';

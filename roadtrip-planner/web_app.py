@@ -1,28 +1,31 @@
-import math
 import os
 import requests
 import xml.etree.ElementTree as ET
 import time
-import uuid
-import json
-from itertools import permutations, combinations
+import functools
 from dotenv import load_dotenv
-import folium
 from flask import Flask, request, jsonify, send_from_directory
+
+from roadtrip_core import (
+    haversine,
+    get_ors_api_key,
+    estimate_fuel_cost,
+    brute_force_tsp,
+    held_karp_tsp,
+    nearest_neighbor_tsp,
+    generate_map,
+    CAR_TYPES,
+    FALLBACK_PRICES,
+)
 
 load_dotenv()
 
 # --- Config ---
-EARTH_RADIUS_KM = 6371
 ORS_API_KEY = os.getenv("ORS_API_KEY")
 GEOCODE_URL = "https://api.openrouteservice.org/geocode/search"
 REVERSE_GEOCODE_URL = "https://api.openrouteservice.org/geocode/reverse"
 ROUTE_URL = "https://api.openrouteservice.org/v2/directions/driving-car/geojson"
 FUEL_URL = "https://www.fueleconomy.gov/ws/rest/fuelprices"
-
-# EIA API v2 — U.S. Energy Information Administration
-# Provides weekly retail gasoline prices by state, region, and grade
-# DEMO_KEY works without registration but is rate-limited and should not be relied on for production.
 EIA_BASE_URL = "https://api.eia.gov/v2/petroleum/pri/gnd/data/"
 EIA_API_KEY = os.getenv("EIA_API_KEY", "DEMO_KEY")
 
@@ -41,11 +44,16 @@ OVERPASS_URLS = [
 ]
 OVERPASS_USER_AGENT = "roadtrip-planner/1.0"
 LODGING_TOURISM_TAGS = {'hotel', 'motel', 'hostel', 'guest_house'}
-POI_SAMPLE_POINTS = 1
+# Sample more points along the route so POIs cover the whole trip,
+# not just the midpoint. Each sample triggers one Overpass query.
+POI_SAMPLE_POINTS = 4
 POI_MAX_PER_CATEGORY = 12
 # Overpass throttles hard (429/504) and each extra element costs latency,
 # so cap what a single query returns.
-POI_QUERY_LIMIT = 12
+POI_QUERY_LIMIT = 50
+
+# Map files are generated per-trip; anything older than this is deleted.
+MAP_MAX_AGE_SECONDS = 24 * 60 * 60  # 24 hours
 
 # EIA duoarea codes for US states
 # Maps state abbreviation (uppercase) -> EIA duoarea code
@@ -80,49 +88,84 @@ AVOID_FEATURES = {
     "ferries": "ferries"
 }
 
-CAR_TYPES = {
-    "economy": 35,
-    "sedan": 30,
-    "suv": 22,
-    "truck": 15,
-    "sports": 18
-}
-
 app = Flask(__name__, static_folder='static')
 
 # Directory for generated maps
 MAPS_DIR = os.path.join(os.path.dirname(__file__), 'maps')
 os.makedirs(MAPS_DIR, exist_ok=True)
 
-# --- Haversine ---
-def haversine(coord1, coord2):
-    """Straight-line distance between two [lon, lat] points along Earth's surface."""
-    lon1, lat1 = coord1
-    lon2, lat2 = coord2
-    lat1, lat2 = math.radians(lat1), math.radians(lat2)
-    lon1, lon2 = math.radians(lon1), math.radians(lon2)
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    a = math.sin(dlat / 2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2)**2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    return EARTH_RADIUS_KM * c
 
-def get_ors_api_key():
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    local_env = os.path.join(base_dir, ".env")
-    parent_env = os.path.join(base_dir, "..", ".env")
+def cleanup_old_maps(max_age_seconds=MAP_MAX_AGE_SECONDS, max_files=100):
+    """
+    Delete stale generated map files so the maps/ directory does not grow
+    without bound. Called periodically from serve_map.
+    """
+    try:
+        files = []
+        for fname in os.listdir(MAPS_DIR):
+            if not fname.endswith('.html'):
+                continue
+            fpath = os.path.join(MAPS_DIR, fname)
+            try:
+                mtime = os.path.getmtime(fpath)
+            except OSError:
+                continue
+            files.append((fpath, mtime))
 
-    if os.path.exists(local_env):
-        load_dotenv(local_env, override=True)
-    if os.path.exists(parent_env):
-        load_dotenv(parent_env, override=True)
+        now = time.time()
+        # Delete oldest files over the count cap.
+        if len(files) > max_files:
+            files.sort(key=lambda x: x[1])
+            for fpath, _ in files[: len(files) - max_files]:
+                try:
+                    os.remove(fpath)
+                except OSError:
+                    pass
 
-    key = os.getenv("ORS_API_KEY")
-    if not key or not key.strip() or key.strip() == "your_openrouteservice_api_key_here":
-        return None
-    return key.strip()
+        # Delete any file older than the max age.
+        for fpath, mtime in files:
+            if now - mtime > max_age_seconds:
+                try:
+                    os.remove(fpath)
+                except OSError:
+                    pass
+    except Exception as e:
+        print(f"Map cleanup error: {e}")
+
+# --- Simple TTL cache for external API calls ---
+def _make_hashable(obj):
+    """Recursively convert unhashable types (list, dict) into hashable ones."""
+    if isinstance(obj, list):
+        return tuple(_make_hashable(item) for item in obj)
+    if isinstance(obj, dict):
+        return tuple(sorted((k, _make_hashable(v)) for k, v in obj.items()))
+    if isinstance(obj, tuple):
+        return tuple(_make_hashable(item) for item in obj)
+    return obj
+
+
+def ttl_cache(seconds=3600):
+    """Cache function results for `seconds` seconds."""
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            key = (func.__name__, _make_hashable(args), tuple(sorted((k, _make_hashable(v)) for k, v in kwargs.items())))
+            now = time.time()
+            if key in ttl_cache._store:
+                cached_at, result = ttl_cache._store[key]
+                if now - cached_at < seconds:
+                    return result
+            result = func(*args, **kwargs)
+            ttl_cache._store[key] = (now, result)
+            return result
+        return wrapper
+    return decorator
+
+ttl_cache._store = {}
+
 
 # --- Geocoding ---
+@ttl_cache(seconds=3600)
 def get_coordinates(city_name):
     api_key = get_ors_api_key()
     if not api_key:
@@ -177,7 +220,7 @@ def build_route_options(route_type=None, avoid=None):
     return options
 
 
-def get_route(start_coords, end_coords, route_options=None):
+def get_route(start_coords, end_coords, route_options=None, _retry_attempt=0):
     """
     Returns (distance_m, duration_s, geometry).
     geometry is the actual road-shaped path as a list of [lon, lat] points.
@@ -194,6 +237,12 @@ def get_route(start_coords, end_coords, route_options=None):
         if r.status_code in (401, 403):
             print(f"ERROR: Invalid ORS_API_KEY in get_route (HTTP {r.status_code})")
             return None, None, None
+        if r.status_code == 429 and _retry_attempt < 2:
+            # Rate limited: wait briefly with exponential backoff, then retry.
+            backoff = (2 ** _retry_attempt) + 1
+            print(f"ORS rate limited (429), retrying in {backoff}s...")
+            time.sleep(backoff)
+            return get_route(start_coords, end_coords, route_options, _retry_attempt + 1)
         if r.status_code == 400 and route_options:
             # The requested preference or avoid_features may be unroutable for
             # this pair of points; fall back to a plain route rather than
@@ -211,8 +260,11 @@ def get_route(start_coords, end_coords, route_options=None):
         return None, None, None
 
 # --- Reverse-geocode to US state ---
+@ttl_cache(seconds=3600)
 def get_state_from_coords(lon, lat):
     """Reverse-geocode [lon, lat] to a US state abbreviation using ORS."""
+    if not has_valid_eia_key():
+        return None
     api_key = get_ors_api_key()
     if not api_key:
         return None
@@ -281,6 +333,7 @@ def get_eia_gas_prices(duoarea_codes=None, weeks=1):
         return []
 
 
+@ttl_cache(seconds=3600)
 def get_eia_prices_for_states(state_abbrevs):
     """
     Given a list of state abbreviations, fetch the latest gas prices per state.
@@ -355,19 +408,6 @@ def get_fuel_prices_legacy():
         return None
 
 
-# Fallback prices
-FALLBACK_PRICES = {
-    'regular': 3.50,
-    'midgrade': 3.70,
-    'premium': 3.90,
-    'diesel': 4.20,
-    'cng': 2.50,
-    'e85': 2.80,
-    'electric': 0.12,
-    'lpg': 3.00
-}
-
-
 @app.route('/api/fuel_price', methods=['GET'])
 def fuel_price():
     """Get all fuel prices (tries EIA national, then legacy, then fallback)."""
@@ -396,104 +436,8 @@ def fuel_price():
     })
 
 
-@app.route('/api/gas-prices', methods=['POST'])
-def gas_prices_by_route():
-    """Get gas prices for each state along the route."""
-    data = request.get_json()
-    coords = data.get('coords', [])  # list of [lon, lat]
-    if not coords:
-        return jsonify({'error': 'Coordinates required'}), 400
-
-    # Determine state for each coordinate
-    states = []
-    for coord in coords:
-        st = get_state_from_coords(coord[0], coord[1])
-        states.append(st)
-
-    # Get prices for unique states
-    unique_states = [s for s in set(states) if s]
-    prices_by_state = get_eia_prices_for_states(unique_states)
-
-    # If EIA is unavailable, fallback to legacy national prices for all states
-    if not prices_by_state:
-        legacy = get_fuel_prices_legacy() or FALLBACK_PRICES
-        prices_by_state = {'US': {**legacy, 'state': 'US', 'area_name': 'National Average'}}
-        source = 'fueleconomy.gov'
-    else:
-        source = 'eia'
-
-    return jsonify({
-        'states': states,
-        'prices_by_state': prices_by_state,
-        'source': source,
-        'eia_enabled': has_valid_eia_key(),
-        'live_prices': source in ('eia', 'fueleconomy.gov')
-    })
-
-
-@app.route('/api/gas-prices/national', methods=['GET'])
-def gas_prices_national():
-    """Get national average gas prices + 8-week trend."""
-    # Fetch national average for the last 8 weeks
-    rows = get_eia_gas_prices(['NUS'], weeks=8)
-
-    # Build trend data (regular only, by week)
-    trend = []
-    seen_periods = set()
-    for row in rows:
-        if row['product'] == 'EPMR' and row['period'] not in seen_periods:
-            seen_periods.add(row['period'])
-            trend.append({'period': row['period'], 'price': row['price']})
-
-    # Sort chronologically
-    trend.sort(key=lambda x: x['period'])
-
-    # Get current prices (most recent week, all grades)
-    current = {}
-    product_map = {'EPMR': 'regular', 'EPMM': 'midgrade', 'EPMP': 'premium', 'EPMD': 'diesel'}
-    most_recent_period = None
-    for row in rows:
-        if most_recent_period is None:
-            most_recent_period = row['period']
-        if row['period'] == most_recent_period:
-            friendly = product_map.get(row['product'])
-            if friendly:
-                current[friendly] = row['price']
-
-    if not current:
-        legacy = get_fuel_prices_legacy() or FALLBACK_PRICES
-        current = legacy
-        source = 'fallback'
-    else:
-        source = 'eia'
-
-    return jsonify({
-        'current': current,
-        'trend': trend,
-        'period': most_recent_period,
-        'source': source
-    })
-
-
-def get_fuel_price(fuel_type='regular'):
-    """Get price for a specific fuel type, with EIA -> legacy -> fallback chain."""
-    # Try EIA national
-    eia_data = get_eia_prices_for_states([])
-    if eia_data and 'US' in eia_data:
-        price = eia_data['US'].get(fuel_type)
-        if price:
-            return price
-
-    # Legacy fallback
-    fuels = get_fuel_prices_legacy()
-    if fuels and fuel_type in fuels:
-        return fuels[fuel_type]
-
-    # Hard fallback
-    return FALLBACK_PRICES.get(fuel_type, 3.50)
-
-
 # --- Weather forecast (Open-Meteo) ---
+@ttl_cache(seconds=1800)
 def get_weather_for_coords(coord_list):
     """
     Fetch 3-day weather forecast for a list of [lon, lat] coordinates.
@@ -543,112 +487,6 @@ def get_weather_for_coords(coord_list):
             results.append({'lat': lat, 'lon': lon, 'days': [], 'error': str(e)})
     return results
 
-# --- Fuel cost ---
-def estimate_fuel_cost(distance_km, mpg, price_per_gallon):
-    miles = distance_km * 0.621371
-    gallons = miles / mpg
-    return round(gallons * price_per_gallon, 2)
-
-# --- TSP: Brute Force O(n!) ---
-def brute_force_tsp(coords):
-    n = len(coords)
-    others = list(range(1, n))
-    best_order = None
-    best_dist = float("inf")
-    for perm in permutations(others):
-        order = [0] + list(perm)
-        dist = sum(haversine(coords[order[i]], coords[order[i + 1]]) for i in range(len(order) - 1))
-        if dist < best_dist:
-            best_dist = dist
-            best_order = order
-    return best_order, best_dist
-
-# --- TSP: Held-Karp Dynamic Programming O(2^n * n^2) ---
-def held_karp_tsp(coords):
-    n = len(coords)
-    dist = [[haversine(coords[i], coords[j]) for j in range(n)] for i in range(n)]
-    C = {}
-    for k in range(1, n):
-        C[(1 << k, k)] = (dist[0][k], [0, k])
-    for subset_size in range(2, n):
-        for subset in combinations(range(1, n), subset_size):
-            bits = 0
-            for bit in subset:
-                bits |= 1 << bit
-            for k in subset:
-                prev_bits = bits & ~(1 << k)
-                candidates = []
-                for m in subset:
-                    if m == k:
-                        continue
-                    if (prev_bits, m) in C:
-                        cost, path = C[(prev_bits, m)]
-                        candidates.append((cost + dist[m][k], path + [k]))
-                if candidates:
-                    C[(bits, k)] = min(candidates, key=lambda x: x[0])
-    full_bits = (1 << n) - 2  # all cities except city 0
-    best = None
-    for k in range(1, n):
-        if (full_bits, k) in C:
-            cost, path = C[(full_bits, k)]
-            if best is None or cost < best[0]:
-                best = (cost, path)
-    return best[1], best[0]
-
-# --- TSP: Nearest Neighbor Heuristic O(n^2) ---
-def nearest_neighbor_tsp(coords):
-    n = len(coords)
-    visited = [False] * n
-    order = [0]
-    visited[0] = True
-    for _ in range(n - 1):
-        current = order[-1]
-        nearest, nearest_dist = None, float("inf")
-        for j in range(n):
-            if not visited[j]:
-                d = haversine(coords[current], coords[j])
-                if d < nearest_dist:
-                    nearest_dist = d
-                    nearest = j
-        order.append(nearest)
-        visited[nearest] = True
-    total = sum(haversine(coords[order[i]], coords[order[i + 1]]) for i in range(len(order) - 1))
-    return order, total
-
-# --- Map generation ---
-def generate_map(cities, coords, route_geometry=None, filename=None):
-    if filename is None:
-        filename = f"map_{uuid.uuid4().hex}.html"
-    filepath = os.path.join(MAPS_DIR, filename)
-    print(f"Generating map: {filepath}")  # Debug
-    latlon_coords = [[lat, lon] for lon, lat in coords]
-    center_lat = sum(c[0] for c in latlon_coords) / len(latlon_coords)
-    center_lon = sum(c[1] for c in latlon_coords) / len(latlon_coords)
-    m = folium.Map(location=[center_lat, center_lon], zoom_start=6, tiles="OpenStreetMap")
-    for i, (city, latlon) in enumerate(zip(cities, latlon_coords)):
-        if i == 0:
-            color, label = "green", f"Start: {city}"
-        elif i == len(cities) - 1:
-            color, label = "red", f"End: {city}"
-        else:
-            color, label = "blue", f"Stop {i}: {city}"
-        folium.Marker(
-            location=latlon,
-            popup=label,
-            tooltip=label,
-            icon=folium.Icon(color=color)
-        ).add_to(m)
-    if route_geometry:
-        route_latlon = [[lat, lon] for lon, lat in route_geometry]
-        folium.PolyLine(route_latlon, color="#3388ff", weight=4, opacity=0.8).add_to(m)
-        m.fit_bounds(route_latlon)
-    else:
-        folium.PolyLine(latlon_coords, color="#3388ff", weight=4, opacity=0.8, dash_array="8").add_to(m)
-        m.fit_bounds(latlon_coords)
-    m.save(filepath)
-    print(f"Map saved: {filepath}")  # Debug
-    return filename
-
 # --- Flask routes ---
 @app.route('/')
 def index():
@@ -668,23 +506,6 @@ def geocode():
     if coords is None:
         return jsonify({'error': error_msg or f'Could not geocode city: {city}'}), 400
     return jsonify({'coords': coords})
-
-@app.route('/api/route', methods=['POST'])
-def route():
-    data = request.get_json()
-    start = data.get('start')
-    end = data.get('end')
-    if not start or not end:
-        return jsonify({'error': 'Start and end coordinates are required'}), 400
-    route_options = build_route_options(data.get('route_type'), data.get('avoid'))
-    distance_m, duration_s, geometry = get_route(start, end, route_options)
-    if distance_m is None:
-        return jsonify({'error': 'Route calculation failed'}), 500
-    return jsonify({
-        'distance_m': distance_m,
-        'duration_s': duration_s,
-        'geometry': geometry
-    })
 
 @app.route('/api/car-types/<car_type>', methods=['GET'])
 def car_type_info(car_type):
@@ -852,14 +673,20 @@ def optimize():
 
 @app.route('/map/<filename>')
 def serve_map(filename):
-    filepath = os.path.join(MAPS_DIR, filename)
-    with open('map_requests.log', 'a') as f:
-        f.write(f'Serving map: {filepath} from {request.remote_addr}\\n')
+    # Prevent path traversal
+    safe_name = os.path.basename(filename)
+    if safe_name != filename:
+        return 'Invalid filename', 400
+    filepath = os.path.join(MAPS_DIR, safe_name)
     if not os.path.exists(filepath):
         with open('map_requests.log', 'a') as f:
-            f.write(f'File not found: {filepath}\\n')
+            f.write(f'File not found: {safe_name}\\n')
         return 'Map not found', 404
-    return send_from_directory(MAPS_DIR, filename)
+    # Opportunistically clean up old maps (cheap: lists a small dir).
+    cleanup_old_maps()
+    with open('map_requests.log', 'a') as f:
+        f.write(f'Serving map: {safe_name} from {request.remote_addr}\\n')
+    return send_from_directory(MAPS_DIR, safe_name)
 
 # --- Points of Interest (Overpass API) ---
 def overpass_query(query, attempts=1):
@@ -901,7 +728,7 @@ def get_pois_along_route(coords, radius_miles=5):
     Each value is list of dicts with 'name', 'address', 'lat', 'lon'
     """
     if not coords:
-        return {'gas_station': [], 'restaurant': [], 'lodging': []}
+        return {'attraction': [], 'gas_station': [], 'restaurant': [], 'lodging': []}
     # Sample points to avoid too many requests, while covering the route.
     if POI_SAMPLE_POINTS <= 1 or len(coords) <= POI_SAMPLE_POINTS:
         sampled = [coords[len(coords) // 2]]
@@ -912,7 +739,7 @@ def get_pois_along_route(coords, radius_miles=5):
         for i in range(POI_SAMPLE_POINTS):
             index = int(round(i * step))
             sampled.append(coords[min(index, len(coords) - 1)])
-    pois = {'gas_station': [], 'restaurant': [], 'lodging': []}
+    pois = {'attraction': [], 'gas_station': [], 'restaurant': [], 'lodging': []}
 
     def parse_element(element):
         tags = element.get('tags', {})
@@ -948,6 +775,14 @@ def get_pois_along_route(coords, radius_miles=5):
           node["tourism"~"^(hotel|motel|hostel|guest_house)$"](around:{radius_meters},{lat},{lon});
           way["tourism"~"^(hotel|motel|hostel|guest_house)$"](around:{radius_meters},{lat},{lon});
           relation["tourism"~"^(hotel|motel|hostel|guest_house)$"](around:{radius_meters},{lat},{lon});
+
+          node["tourism"~"^(attraction|viewpoint|museum|zoo|theme_park)$"](around:{radius_meters},{lat},{lon});
+          way["tourism"~"^(attraction|viewpoint|museum|zoo|theme_park)$"](around:{radius_meters},{lat},{lon});
+          relation["tourism"~"^(attraction|viewpoint|museum|zoo|theme_park)$"](around:{radius_meters},{lat},{lon});
+
+          node["historic"~"^(monument|castle|ruins|memorial)$"](around:{radius_meters},{lat},{lon});
+          way["historic"~"^(monument|castle|ruins|memorial)$"](around:{radius_meters},{lat},{lon});
+          relation["historic"~"^(monument|castle|ruins|memorial)$"](around:{radius_meters},{lat},{lon});
         );
         out center {POI_QUERY_LIMIT};
         """
@@ -962,12 +797,16 @@ def get_pois_along_route(coords, radius_miles=5):
                     continue
                 tags = poi['tags']
                 amenity = tags.get('amenity')
+                tourism = tags.get('tourism')
+                historic = tags.get('historic')
                 if amenity == 'fuel':
                     pois['gas_station'].append(poi)
                 elif amenity == 'restaurant':
                     pois['restaurant'].append(poi)
-                elif tags.get('tourism') in LODGING_TOURISM_TAGS:
+                elif tourism in LODGING_TOURISM_TAGS:
                     pois['lodging'].append(poi)
+                elif tourism in ('attraction', 'viewpoint', 'museum', 'zoo', 'theme_park') or historic in ('monument', 'castle', 'ruins', 'memorial'):
+                    pois['attraction'].append(poi)
         except Exception as e:
             print(f"POI request error: {e}")
             continue
@@ -986,6 +825,7 @@ def get_pois_along_route(coords, radius_miles=5):
     return pois
 
 
+@ttl_cache(seconds=1800)
 def get_lodging_near(coord, radius_miles=12, max_results=6):
     """Find lodging near a coordinate using Overpass and OSM tourism tags."""
     if not coord or len(coord) != 2:
@@ -1058,13 +898,13 @@ def pois():
     coords = data.get('coords')  # list of [lon, lat]
     radius_miles = data.get('radius_miles', 5)
     if not isinstance(coords, list) or not coords:
-        return jsonify({'poi': {'gas_station': [], 'restaurant': [], 'lodging': []}})
+        return jsonify({'poi': {'attraction': [], 'gas_station': [], 'restaurant': [], 'lodging': []}})
 
     try:
         pois = get_pois_along_route(coords, radius_miles)
     except Exception as exc:
         print(f'POI route error: {exc}')
-        pois = {'gas_station': [], 'restaurant': [], 'lodging': []}
+        pois = {'attraction': [], 'gas_station': [], 'restaurant': [], 'lodging': []}
 
     return jsonify({'poi': pois})
 
